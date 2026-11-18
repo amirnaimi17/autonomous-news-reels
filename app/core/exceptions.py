@@ -51,3 +51,7 @@ class GroundingError(NewsReelsError):
 
 class VideoValidationError(NewsReelsError):
     """A rendered file failed the reel acceptance checks."""
+
+
+class SelectionConflict(PersistenceError):
+    """Another run wrote a selection row this transaction tried to claim."""

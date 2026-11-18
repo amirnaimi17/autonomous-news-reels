@@ -7,19 +7,31 @@ silently switch to another implementation.
 from app.core.config import Settings
 from app.core.exceptions import ConfigurationError
 from app.services.image_providers.solid import SolidColorImageProvider
+from app.services.news.sources import configured_news_sources
+from app.services.news_sources.rss import RssNewsSource, UrllibTransport
 from app.services.news_sources.static import StaticNewsSource
 from app.services.notifications.log import LogNotifier
 from app.services.tts_providers.silent import SilentSpeechProvider
 
 
-def build_news_source(settings: Settings) -> StaticNewsSource:
-    """Return the news source, or explain why RSS is not available yet."""
+def build_news_source(settings: Settings) -> StaticNewsSource | RssNewsSource:
+    """Return the configured news source.
+
+    RSS with no sources is a configuration error. There is no built-in feed list.
+    """
 
     if settings.news_provider == "static":
         return StaticNewsSource(())
     if settings.news_provider == "rss":
-        raise ConfigurationError(
-            "RSS collection is not implemented yet. It is the Phase 2 news research client."
+        sources = configured_news_sources(settings)
+        if not sources:
+            raise ConfigurationError(
+                "NEWS_PROVIDER=rss requires NEWS_SOURCES or NEWS_SOURCES_FILE. "
+                "No default feeds are configured."
+            )
+        return RssNewsSource(
+            sources,
+            UrllibTransport(timeout=settings.http_timeout_seconds, user_agent=settings.http_user_agent),
         )
     raise ConfigurationError(f"unknown news provider: {settings.news_provider}")
 

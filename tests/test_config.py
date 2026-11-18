@@ -18,7 +18,8 @@ def test_defaults_match_the_berlin_schedule() -> None:
     assert settings.fail_closed_deduplication is True
     assert settings.instagram_publish_enabled is False
     assert settings.slot_limit == 3
-    assert len(settings.news_sources) == 5
+    assert settings.news_sources == ()
+    assert settings.translation_provider == "none"
 
 
 def test_slots_are_sorted_and_duplicates_are_rejected() -> None:
@@ -30,17 +31,20 @@ def test_slots_are_sorted_and_duplicates_are_rejected() -> None:
         Settings(_env_file=None, production_slots="25:00")
 
 
-def test_news_sources_accept_json_and_csv() -> None:
+def test_news_sources_require_language_and_reject_bare_urls() -> None:
     parsed = Settings(
         _env_file=None,
-        news_sources='[{"name":"Local","url":"https://example.com/rss.xml"}]',
+        news_sources='[{"name":"Local","url":"https://example.com/rss.xml","language":"EN"}]',
     )
     assert parsed.news_sources[0].name == "Local"
-    listed = Settings(_env_file=None, news_sources="https://example.com/a.xml,https://example.com/b.xml")
-    assert [source.url for source in listed.news_sources] == [
-        "https://example.com/a.xml",
-        "https://example.com/b.xml",
-    ]
+    assert parsed.news_sources[0].language == "en"
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, news_sources="https://example.com/a.xml,https://example.com/b.xml")
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            news_sources='[{"name":"Local","url":"https://example.com/rss.xml"}]',
+        )
 
 
 def test_invalid_timezone_and_odd_resolution_are_rejected() -> None:

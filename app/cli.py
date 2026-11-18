@@ -27,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init-db", help="Create the database, the default client, and media directories")
     sub.add_parser("status", help="Show configuration, database counts, and FFmpeg encoders")
+    sub.add_parser("discover", help="Collect configured feeds and fill today's remaining selections")
     return parser
 
 
@@ -43,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
             return _init_db()
         if args.command == "status":
             return _status()
+        if args.command == "discover":
+            return _discover()
     except ValidationError as exc:
         print("configuration error:", file=sys.stderr)
         print(exc, file=sys.stderr)
@@ -84,6 +87,42 @@ def _status() -> int:
     return 0
 
 
+def _discover() -> int:
+    from app.services.news.intake import run_intake
+
+    settings = get_settings()
+    settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_media_dirs(settings)
+    repository = NewsReelsRepository(settings.database_path)
+    repository.initialize(
+        client_id=settings.client_id,
+        name=settings.client_name,
+        timezone_name=settings.timezone,
+        daily_reel_limit=settings.daily_reel_limit,
+        now=datetime.now(timezone.utc),
+    )
+    report = run_intake(settings, repository, now=datetime.now(timezone.utc))
+    print(f"articles in window: {report.articles_seen}")
+    print(f"translation provider: {report.translation_provider}")
+    if report.limitation:
+        print(report.limitation)
+    if report.failures:
+        print("source failures:")
+        for failure in report.failures:
+            print(f"- {failure.source_name}: {failure.error}")
+    if not report.selections:
+        print("selections: none")
+    else:
+        print("selections:")
+        for selection in report.selections:
+            print(
+                f"- rank {selection.rank}: {selection.event_id} "
+                f"score {selection.importance_score:.2f} class {selection.story_class}"
+            )
+    print(f"unfilled ranks: {report.unfilled}")
+    return 0
+
+
 def render_status(settings: Settings, snapshot: StatusSnapshot, capabilities: FFmpegCapabilities) -> str:
     """Format a status report that is safe to print."""
 
@@ -106,6 +145,8 @@ def render_status(settings: Settings, snapshot: StatusSnapshot, capabilities: FF
         f"deduplication fail closed: {settings.fail_closed_deduplication}",
         f"news provider: {settings.news_provider}",
         f"sources: {sources}",
+        f"translation provider: {settings.translation_provider}",
+        "cross-language matching: entity-and-number hint only; not reliable multilingual deduplication",
         f"image provider: {settings.image_provider}",
         f"tts provider: {settings.tts_provider}",
         f"notification provider: {settings.notification_provider}",

@@ -26,8 +26,10 @@ from app.database.models import (
     DailySlot,
     Event,
     EventInput,
+    EventSelection,
     GeneratedContent,
     NotificationRecord,
+    SelectionCandidate,
     StatusSnapshot,
 )
 from app.database.state import allowed_targets
@@ -41,6 +43,7 @@ from app.core.exceptions import (
     NotFoundError,
     PersistenceError,
     QuotaExceededError,
+    SelectionConflict,
     SlotUnavailableError,
 )
 
@@ -438,6 +441,179 @@ class NewsReelsRepository:
         finally:
             connection.close()
         return [_event(row) for row in rows]
+
+    def list_events(self, client_id: str) -> list[Event]:
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                f"""
+                SELECT {_EVENT_COLUMNS} FROM news_events
+                WHERE client_id = ?
+                ORDER BY first_discovered_at
+                """,
+                (client_id,),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [_event(row) for row in rows]
+
+    def list_articles(self, client_id: str) -> list[Article]:
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                f"""
+                SELECT {_ARTICLE_COLUMNS} FROM news_articles
+                WHERE client_id = ?
+                ORDER BY discovered_at
+                """,
+                (client_id,),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [_article(row) for row in rows]
+
+    def list_daily_selections(self, client_id: str, production_date: str) -> list[EventSelection]:
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT id, client_id, event_id, production_date, rank,
+                       importance_score, story_class, created_at
+                FROM event_selections
+                WHERE client_id = ? AND production_date = ?
+                ORDER BY rank
+                """,
+                (client_id, production_date),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [_selection(row) for row in rows]
+
+    def fill_daily_selections(
+        self,
+        *,
+        client_id: str,
+        production_date: str,
+        limit: int,
+        candidates: list[SelectionCandidate] | tuple[SelectionCandidate, ...],
+        now: datetime,
+        attempts: int = 8,
+    ) -> list[EventSelection]:
+        """Insert only the missing ranks for this local date.
+
+        Stored rows stay as they are. The same event cannot be selected again
+        on a later date. A conflicting concurrent insert rolls back and retries.
+        """
+
+        if not 0 <= limit <= 24:
+            raise ValueError("daily selection limit must be from 0 to 24")
+        if limit == 0:
+            return self.list_daily_selections(client_id, production_date)
+        last_conflict: Exception | None = None
+        for _ in range(attempts):
+            try:
+                return self._fill_daily_selections_once(
+                    client_id=client_id,
+                    production_date=production_date,
+                    limit=limit,
+                    candidates=candidates,
+                    now=now,
+                )
+            except SelectionConflict as exc:
+                last_conflict = exc
+            except PersistenceError as exc:
+                if "could not start a transaction" not in str(exc):
+                    raise
+                last_conflict = exc
+        raise PersistenceError("concurrent selection fill did not settle") from last_conflict
+
+    def _fill_daily_selections_once(
+        self,
+        *,
+        client_id: str,
+        production_date: str,
+        limit: int,
+        candidates: list[SelectionCandidate] | tuple[SelectionCandidate, ...],
+        now: datetime,
+    ) -> list[EventSelection]:
+        with self._transaction() as connection:
+            existing = _selection_rows(connection, client_id, production_date)
+            if len(existing) >= limit:
+                return existing
+            taken = {
+                row["event_id"]
+                for row in connection.execute(
+                    "SELECT event_id FROM event_selections WHERE client_id = ?",
+                    (client_id,),
+                )
+            }
+            used_ranks = {row.rank for row in existing}
+            for candidate in candidates:
+                if len(existing) >= limit:
+                    break
+                if candidate.event_id in taken:
+                    continue
+                if not 0 <= candidate.importance_score <= 1:
+                    raise ValueError("importance_score must be between 0 and 1")
+                event = connection.execute(
+                    f"SELECT {_EVENT_COLUMNS} FROM news_events WHERE id = ?",
+                    (candidate.event_id,),
+                ).fetchone()
+                if event is None or event["client_id"] != client_id:
+                    continue
+                if event["state"] != GenerationState.DISCOVERED.value:
+                    continue
+                content = connection.execute(
+                    """
+                    SELECT 1 AS present FROM generated_content
+                    WHERE client_id = ? AND event_id = ?
+                    """,
+                    (client_id, candidate.event_id),
+                ).fetchone()
+                if content is not None:
+                    continue
+                rank = 1
+                while rank in used_ranks:
+                    rank += 1
+                if rank > limit or rank > 24:
+                    break
+                selection_id = _new_id()
+                try:
+                    connection.execute(
+                        """
+                        INSERT INTO event_selections (
+                            id, client_id, event_id, production_date, rank,
+                            importance_score, story_class, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            selection_id,
+                            client_id,
+                            candidate.event_id,
+                            production_date,
+                            rank,
+                            candidate.importance_score,
+                            candidate.story_class,
+                            utc_iso(now),
+                        ),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise SelectionConflict("selection row already exists") from exc
+                taken.add(candidate.event_id)
+                used_ranks.add(rank)
+                existing.append(
+                    EventSelection(
+                        id=selection_id,
+                        client_id=client_id,
+                        event_id=candidate.event_id,
+                        production_date=production_date,
+                        rank=rank,
+                        importance_score=candidate.importance_score,
+                        story_class=candidate.story_class,
+                        created_at=utc_iso(now),
+                    )
+                )
+            return existing
 
     def update_event_assessment(
         self,
@@ -1379,6 +1555,37 @@ def _log(row: sqlite3.Row) -> AgentLog:
         finished_at=row["finished_at"],
         duration_ms=row["duration_ms"],
     )
+
+
+def _selection(row: sqlite3.Row) -> EventSelection:
+    return EventSelection(
+        id=row["id"],
+        client_id=row["client_id"],
+        event_id=row["event_id"],
+        production_date=row["production_date"],
+        rank=int(row["rank"]),
+        importance_score=float(row["importance_score"]),
+        story_class=row["story_class"],
+        created_at=row["created_at"],
+    )
+
+
+def _selection_rows(
+    connection: sqlite3.Connection,
+    client_id: str,
+    production_date: str,
+) -> list[EventSelection]:
+    rows = connection.execute(
+        """
+        SELECT id, client_id, event_id, production_date, rank,
+               importance_score, story_class, created_at
+        FROM event_selections
+        WHERE client_id = ? AND production_date = ?
+        ORDER BY rank
+        """,
+        (client_id, production_date),
+    ).fetchall()
+    return [_selection(row) for row in rows]
 
 
 def _notification(row: sqlite3.Row) -> NotificationRecord:

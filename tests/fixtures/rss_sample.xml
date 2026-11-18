@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example</title>
+    <item>
+      <title>Central bank holds rates</title>
+      <link>https://example.com/rates</link>
+      <description>The central bank held rates at 4.5 percent.</description>
+      <pubDate>Wed, 18 Nov 2026 07:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Undated story</title>
+      <link>https://example.com/undated</link>
+      <description>This item has no date.</description>
+    </item>
+  </channel>
+</rss>

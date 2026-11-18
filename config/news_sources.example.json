@@ -1,0 +1,12 @@
+[
+  {
+    "name": "Example English",
+    "url": "https://example.com/english.xml",
+    "language": "en"
+  },
+  {
+    "name": "Example German",
+    "url": "https://example.com/german.xml",
+    "language": "de"
+  }
+]

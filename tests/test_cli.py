@@ -33,7 +33,7 @@ def test_init_and_status_do_not_print_secrets(tmp_path, monkeypatch, capsys) -> 
     assert main(["init-db"]) == 0
     assert main(["status"]) == 0
     output = capsys.readouterr().out
-    assert "schema: 001" in output
+    assert "schema: 002" in output
     assert "Europe/Berlin" in output
     assert "super-secret-token" not in output
     assert "sk-secret" not in output
@@ -47,6 +47,17 @@ def test_status_without_a_database_fails(tmp_path, monkeypatch) -> None:
 
     reset_settings_cache()
     assert main(["status"]) == 1
+
+
+def test_discover_without_sources_fails(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "reels.db"))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("NEWS_PROVIDER", "rss")
+    monkeypatch.setenv("NEWS_SOURCES", "")
+    from app.core.config import reset_settings_cache
+
+    reset_settings_cache()
+    assert main(["discover"]) == 1
 
 
 def test_instagram_flag_refuses_to_start(tmp_path, monkeypatch) -> None:

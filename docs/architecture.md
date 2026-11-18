@@ -8,8 +8,8 @@ Phase 1 builds the skeleton the later agents plug into. The production run is on
 | --- | --- | --- |
 | Scheduler (Phase 6) | Fires a slot, catches up a missed slot after a restart, refreshes the lock | No. It asks the orchestrator. |
 | Orchestrator | Orders the steps and commits each artifact | Yes. It is the only writer. |
-| News research agent | Reads configured sources and returns articles | No |
-| News selection agent | Applies the window, the score, and duplicate history | No. It receives history as input. |
+| News research | Reads configured RSS or Atom feeds and returns articles | No. `discover` persists the result. |
+| News selection | Scores open events and returns the ordered list | No. `discover` inserts the missing `event_selections` rows. |
 | Script, image, voice, video, notification agents | One transformation each | No |
 | Repository | Transactions, uniqueness, quota, state machine | Yes |
 
@@ -35,17 +35,23 @@ Each artifact step commits before the next one starts. A crash resumes from `las
 
 ## Duplicate prevention
 
-Five checks, applied in this order. An uncertain result is a duplicate when `FAIL_CLOSED_DEDUPLICATION` is true, which is the default. Missing a reel is acceptable. Repeating one is not.
+Five checks, applied in this order. Fail-closed deduplication treats an uncertain same-language gray zone as one event. It does not merge every uncertain cross-language pair. Missing a reel is acceptable. Repeating one is not.
 
 1. **Canonical URL.** Scheme and host are lowercased, `www` is removed, the fragment is dropped, tracking parameters (`utm_*`, `fbclid`, `gclid`, and a short list of campaign ids) are dropped, the remaining query is sorted, and a trailing slash is removed. The database unique key is `(client_id, canonical_url)`. This check is already enforced on write.
 2. **Normalized headline.** Lowercase, punctuation folded, and a trailing outlet name such as “BBC News” removed. The fingerprint is a hash of the sorted significant tokens, so word order alone does not create a new story. A place name after a hyphen is kept, so “Election results - France” and “Election results - Germany” stay distinct.
-3. **Entity and event match.** Phase 2 clusters articles that share entities and an event description. The event row stores entities, a block key, source URLs, and a fingerprint unique per client.
-4. **Semantic similarity.** SimHash of the summary, compared by Hamming distance. Default threshold is 8 bits of 64. Embeddings have a column reserved for a later provider. They are not required.
-5. **Related-event rule.** A new article about an event that already has a reel is stored as an update. In this version it does not become another reel, even when the development is important.
+3. **Same-language overlap.** Title fingerprints, token overlap, entity-and-summary overlap, and SimHash. A gray-zone pair asks the judge. Fail-closed applies only to that same-language gray zone. Conflicting proper names, such as France and Germany, stay separate. The full rules and the cross-language limits are in `docs/deduplication.md`.
+4. **Cross-language hint.** With `TRANSLATION_PROVIDER=none`, two languages match only when they share an alias-catalog entity and a normalized number or the same proper token. Conflicting numbers block the match. This is not reliable multilingual deduplication. A future translator implements `Translator.translate` and then the same-language rules run on the pivot text.
+5. **Related-event rule.** A new article about an event that already has a reel is stored as an update. It does not become another selection, even when the development is important.
 
-The optional semantic judge returns `same_event`, `update`, `distinct`, or `uncertain`. The shipped judge always returns `uncertain`. With fail-closed deduplication, that does not open a new reel.
+The shipped judge always returns `uncertain`. Embeddings have a column reserved for a later provider. They are not computed.
 
-Headline clustering itself is Phase 2. Phase 1 stores the fields, enforces URL and event uniqueness, and tests the fingerprint functions the clusterer will call.
+## Daily selection
+
+`event_selections` is append-only. `UNIQUE (client_id, event_id)` blocks a second selection of the same event on any date. `UNIQUE (client_id, production_date, rank)` blocks two stories at the same rank. The rank check allows 1 through 24 because that is the maximum of `DAILY_REEL_LIMIT`. The fill stops at the configured limit, which defaults to 3 and does not read the production slot list.
+
+The fill runs in `BEGIN IMMEDIATE`. If the day already has enough rows, it returns them. Otherwise it inserts the next free ranks from events that are still `DISCOVERED`, have no `generated_content` row, and were never selected. A unique conflict rolls back and retries from a fresh read. Stored rows are not updated.
+
+This table is not a production reservation. Slot reservation and video generation stay on `daily_production` and `generated_content`, and Phase 2 does not write those tables.
 
 ## Daily quota
 
@@ -74,7 +80,7 @@ No provider credential is required to boot, test, or initialize the database.
 
 | Capability | Phase 1 behavior | Later option | Typical cost |
 | --- | --- | --- | --- |
-| News | Interface only. RSS client is Phase 2. Default feeds are BBC, NYT, Guardian, Al Jazeera, and NPR. | Keep RSS. A paid API is optional. | $0 for public RSS |
+| News | RSS and Atom from `NEWS_SOURCES` or `NEWS_SOURCES_FILE`. No default feeds. | A paid API can sit behind the same fetch method. | $0 for public RSS |
 | Script | Extractive fallback copies source sentences and refuses new numbers. | A small model behind the same request model. | About $0.001 per reel on a mini model, or $0 offline |
 | Images | Solid PPM frame. News cards must not invent a photograph of an event. | Typographic cards via Pillow, or a sourced photo. Generative images stay optional because they can fabricate scenes. | $0 for cards. Generative images are often $0.02–$0.08 each. |
 | Voice | Silent WAV sized from the word count. This is not a voice. | Configurable TTS. Roughly $0.01 per reel for a cloud voice. | $0 until a voice is chosen |
@@ -98,8 +104,8 @@ There is no tenant administration UI and no shared scheduler for many accounts.
 
 ## Database
 
-SQLite in WAL mode, with foreign keys and a migration table. `NewsReelsRepository` is the boundary a PostgreSQL implementation can replace. The schema file is `app/database/migrations/001_initial.sql`.
+SQLite in WAL mode, with foreign keys and a migration table. `NewsReelsRepository` is the boundary a PostgreSQL implementation can replace. Migrations are `001_initial.sql` and `002_selection_history.sql`. The current schema version is `002`.
 
-Tables: `clients`, `news_articles`, `news_events`, `generated_content`, `daily_production`, `agent_execution_logs`, `notifications`, `app_config`, `job_locks`, `schema_migrations`.
+Tables: `clients`, `news_articles`, `news_events`, `event_selections`, `generated_content`, `daily_production`, `agent_execution_logs`, `notifications`, `app_config`, `job_locks`, `schema_migrations`.
 
-Normal operation does not delete articles, events, or finished reels. The duplicate history has to outlive the process.
+Normal operation does not delete articles, events, selections, or finished reels. The duplicate history has to outlive the process. `app_config` is not the selection record.

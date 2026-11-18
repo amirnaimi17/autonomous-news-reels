@@ -60,7 +60,7 @@ _STOPWORDS = frozenset(
     }
 )
 
-_TOKEN = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)?")
+_TOKEN = re.compile(r"[a-z0-9äöüàáâãåæçèéêëìíîïñòóôõøùúûýÿß]+(?:'[a-z0-9äöüàáâãåæçèéêëìíîïñòóôõøùúûýÿß]+)?")
 
 
 def normalize_headline(title: str) -> str:
@@ -78,29 +78,34 @@ def normalize_headline(title: str) -> str:
     return " ".join(text.split())
 
 
-def significant_tokens(text: str) -> tuple[str, ...]:
-    """Return meaningful tokens in reading order."""
+def significant_tokens(text: str, stopwords: Iterable[str] | None = None) -> tuple[str, ...]:
+    """Return meaningful tokens in reading order.
 
+    The default stopword list is English. Pass the list for the article's
+    language so German text is not filtered with English words.
+    """
+
+    blocked = _STOPWORDS if stopwords is None else frozenset(word.lower() for word in stopwords)
     return tuple(
         token
         for token in _TOKEN.findall(normalize_headline(text))
-        if token not in _STOPWORDS and len(token) > 1
+        if token not in blocked and len(token) > 1
     )
 
 
-def title_fingerprint(title: str) -> str:
+def title_fingerprint(title: str, stopwords: Iterable[str] | None = None) -> str:
     """Hash the sorted significant tokens so word order does not matter."""
 
-    tokens = tuple(sorted(set(significant_tokens(title))))
+    tokens = tuple(sorted(set(significant_tokens(title, stopwords))))
     if not tokens:
         raise ValueError("headline has no significant tokens")
     return hashlib.sha256("|".join(tokens).encode("utf-8")).hexdigest()
 
 
-def block_key(title: str) -> str:
-    """Coarse bucket used later to avoid comparing every event to every event."""
+def block_key(title: str, stopwords: Iterable[str] | None = None) -> str:
+    """Coarse bucket used to group events that may describe the same story."""
 
-    tokens = significant_tokens(title)
+    tokens = significant_tokens(title, stopwords)
     return tokens[0] if tokens else "general"
 
 
@@ -116,10 +121,10 @@ def jaccard(left: Iterable[str], right: Iterable[str]) -> float:
     return len(first & second) / len(first | second)
 
 
-def simhash64(text: str) -> str:
+def simhash64(text: str, stopwords: Iterable[str] | None = None) -> str:
     """64-bit SimHash of significant tokens, as 16 hex characters."""
 
-    tokens = significant_tokens(text)
+    tokens = significant_tokens(text, stopwords)
     if not tokens:
         raise ValueError("text has no tokens to hash")
     weights = [0] * 64

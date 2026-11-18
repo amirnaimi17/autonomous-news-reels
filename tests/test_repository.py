@@ -19,8 +19,8 @@ from tests.support import NOW, article_input, event_input
 
 
 def test_migration_is_idempotent_and_rows_survive_reopen(repository: NewsReelsRepository) -> None:
-    assert repository.migrate() == "001"
-    assert repository.migrate() == "001"
+    assert repository.migrate() == "002"
+    assert repository.migrate() == "002"
     stored, created = repository.upsert_article(article_input(), now=NOW)
     assert created is True
     reopened = NewsReelsRepository(repository.path)

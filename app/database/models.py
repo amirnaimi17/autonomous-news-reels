@@ -161,6 +161,29 @@ class NotificationRecord:
 
 
 @dataclass(frozen=True)
+class SelectionCandidate:
+    """One eligible event, already ordered by the selector."""
+
+    event_id: str
+    importance_score: float
+    story_class: str | None = None
+
+
+@dataclass(frozen=True)
+class EventSelection:
+    """A permanent daily selection row. Rows are inserted and never rewritten."""
+
+    id: str
+    client_id: str
+    event_id: str
+    production_date: str
+    rank: int
+    importance_score: float
+    story_class: str | None
+    created_at: str
+
+
+@dataclass(frozen=True)
 class StatusSnapshot:
     schema_version: str | None
     client_count: int

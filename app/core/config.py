@@ -9,12 +9,12 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 ENV_VARS: tuple[str, ...] = (
     "APP_ENV",
@@ -33,6 +33,11 @@ ENV_VARS: tuple[str, ...] = (
     "SIMHASH_HAMMING_THRESHOLD",
     "NEWS_PROVIDER",
     "NEWS_SOURCES",
+    "NEWS_SOURCES_FILE",
+    "STOPWORDS_DIR",
+    "ENTITY_ALIASES_FILE",
+    "TRANSLATION_PROVIDER",
+    "OLDER_WINDOW_MIN_IMPORTANCE",
     "HTTP_TIMEOUT_SECONDS",
     "HTTP_USER_AGENT",
     "DATABASE_PATH",
@@ -66,7 +71,16 @@ class NewsSourceConfig(BaseModel):
 
     name: str = Field(min_length=1)
     url: str
+    language: str
     kind: Literal["rss"] = "rss"
+
+    @field_validator("language")
+    @classmethod
+    def language_code(cls, value: str) -> str:
+        lowered = value.strip().lower()
+        if not lowered.isalpha() or not 2 <= len(lowered) <= 3:
+            raise ValueError("language must be a 2 or 3 letter code such as en or de")
+        return lowered
 
     @field_validator("url")
     @classmethod
@@ -75,20 +89,6 @@ class NewsSourceConfig(BaseModel):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError(f"invalid source url: {value}")
         return value
-
-
-DEFAULT_NEWS_SOURCES: tuple[NewsSourceConfig, ...] = (
-    NewsSourceConfig(name="BBC World", url="https://feeds.bbci.co.uk/news/world/rss.xml"),
-    NewsSourceConfig(name="NYT World", url="https://rss.nytimes.com/services/xml/rss/nyt/World.xml"),
-    NewsSourceConfig(name="Guardian World", url="https://www.theguardian.com/world/rss"),
-    NewsSourceConfig(name="Al Jazeera", url="https://www.aljazeera.com/xml/rss/all.xml"),
-    NewsSourceConfig(name="NPR World", url="https://feeds.npr.org/1004/rss.xml"),
-)
-
-
-def _source_name(url: str) -> str:
-    host = urlparse(url).netloc.removeprefix("www.")
-    return host or url
 
 
 def _coerce_source(value: object) -> NewsSourceConfig:
@@ -128,7 +128,12 @@ class Settings(BaseSettings):
     entity_jaccard_duplicate_threshold: float = Field(default=0.50, ge=0, le=1)
     simhash_hamming_threshold: int = Field(default=8, ge=0, le=64)
     news_provider: Literal["rss", "static"] = "rss"
-    news_sources: tuple[NewsSourceConfig, ...] = Field(default_factory=lambda: DEFAULT_NEWS_SOURCES)
+    news_sources_file: Path | None = None
+    news_sources: Annotated[tuple[NewsSourceConfig, ...], NoDecode] = ()
+    stopwords_dir: Path = Path("config/stopwords")
+    entity_aliases_file: Path | None = None
+    translation_provider: Literal["none"] = "none"
+    older_window_min_importance: float = Field(default=0.75, ge=0, le=1)
     http_timeout_seconds: float = Field(default=20, gt=0, le=120)
     http_user_agent: str = "AutonomousNewsReels/0.1"
     database_path: Path = Path("data/news_reels.db")
@@ -203,27 +208,24 @@ class Settings(BaseSettings):
     @classmethod
     def parse_sources(cls, value: object) -> tuple[NewsSourceConfig, ...]:
         if value is None or value == "":
-            return DEFAULT_NEWS_SOURCES
+            return ()
         if isinstance(value, str):
             text = value.strip()
             if not text:
-                return DEFAULT_NEWS_SOURCES
-            if text.startswith("["):
-                parsed = json.loads(text)
-                if not isinstance(parsed, list) or not parsed:
-                    raise ValueError("NEWS_SOURCES JSON must be a non-empty list")
-                return tuple(_coerce_source(item) for item in parsed)
-            urls = [part.strip() for part in text.split(",") if part.strip()]
-            return tuple(
-                NewsSourceConfig(name=_source_name(url), url=url) for url in urls
-            )
-        if isinstance(value, tuple) and value and isinstance(value[0], NewsSourceConfig):
+                return ()
+            if not text.startswith("["):
+                raise ValueError(
+                    "NEWS_SOURCES must be a JSON list of objects with name, url, and language"
+                )
+            parsed = json.loads(text)
+            if not isinstance(parsed, list):
+                raise ValueError("NEWS_SOURCES JSON must be a list")
+            return tuple(_coerce_source(item) for item in parsed)
+        if isinstance(value, tuple) and all(isinstance(item, NewsSourceConfig) for item in value):
             return value
         if isinstance(value, (list, tuple)):
-            if not value:
-                return DEFAULT_NEWS_SOURCES
             return tuple(_coerce_source(item) for item in value)
-        raise ValueError("NEWS_SOURCES must be a JSON list or comma-separated URLs")
+        raise ValueError("NEWS_SOURCES must be a JSON list of objects with name, url, and language")
 
     @field_validator("video_width", "video_height")
     @classmethod
