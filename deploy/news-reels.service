@@ -1,0 +1,21 @@
+# Template for Phase 6, when `python main.py scheduler` exists.
+# Installing this unit today will fail because the scheduler command is not implemented.
+# NVENC encoding is available on the host ffmpeg. The Docker image uses CPU encoding
+# unless the NVIDIA container runtime is added later.
+
+[Unit]
+Description=Autonomous news reel generator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=newsreels
+WorkingDirectory=/opt/news-reels
+EnvironmentFile=/opt/news-reels/.env
+ExecStart=/opt/news-reels/.venv/bin/python main.py scheduler
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+.venv
+.git
+.pytest_cache
+.env
+data
+storage/images
+storage/audio
+storage/videos
+storage/generated
+tests
+docs
+**/__pycache__
+*.pyc
