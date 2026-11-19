@@ -1,0 +1,18 @@
+{
+  "schema_version": "pilot-1",
+  "demo": true,
+  "event_id": "synthetic-demo-not-news",
+  "language": "en",
+  "audience": "Developers testing their own workflow",
+  "headline": "Demo: How a four-slide workflow works",
+  "source_urls": ["https://example.org/demo"],
+  "claims": [{"text": "This is fictional demonstration content, not a real event.", "source_urls": ["https://example.org/demo"]}],
+  "duration_seconds": 36,
+  "scenes": [
+    {"number": 1, "duration_seconds": 8, "narration": "This is a synthetic example, not breaking news.", "on_screen_text": "DEMO ONLY", "visual_prompt": "Abstract editorial opening with visible DEMO watermark"},
+    {"number": 2, "duration_seconds": 9, "narration": "Scene two demonstrates an evidence and facts placeholder.", "on_screen_text": "FACT PLACEHOLDER", "visual_prompt": "Minimal abstract news cards with DEMO watermark"},
+    {"number": 3, "duration_seconds": 10, "narration": "Scene three demonstrates adding context without speculation.", "on_screen_text": "CONTEXT", "visual_prompt": "Stylized abstract diagrams with DEMO watermark"},
+    {"number": 4, "duration_seconds": 9, "narration": "Scene four ends this fictional workflow demonstration.", "on_screen_text": "END OF DEMO", "visual_prompt": "Neutral closing frame with visible DEMO watermark"}
+  ],
+  "disclaimers": ["Synthetic test fixture. Not a factual news event; never publish."]
+}

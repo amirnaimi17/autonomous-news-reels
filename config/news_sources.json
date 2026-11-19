@@ -1,12 +1,12 @@
 [
   {
-    "name": "Example English",
-    "url": "https://example.com/english.xml",
+    "name": "BBC World",
+    "url": "https://feeds.bbci.co.uk/news/world/rss.xml",
     "language": "en"
   },
   {
-    "name": "Example German",
-    "url": "https://example.com/german.xml",
+    "name": "Tagesschau",
+    "url": "https://www.tagesschau.de/xml/rss2/",
     "language": "de"
   }
 ]
