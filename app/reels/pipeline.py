@@ -388,7 +388,7 @@ def run_generation(
         )
         return _stage("failed", message, reel_id)
     if not assets:
-        message = "no licensed photographs"
+        message = "no relevant photographs"
         _record_failed(
             store,
             config,

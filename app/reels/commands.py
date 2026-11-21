@@ -549,11 +549,11 @@ def find_licensed_assets(
     config: ReelConfig | None = None,
     transport=None,
 ) -> list[dict]:
-    """Download real licensed photographs for every storyboard scene.
+    """Download visually relevant photographs for every storyboard scene.
 
     Runs entirely in Python (Openverse + Commons). Raises ``PhotoError`` when a
-    mandatory photograph cannot be retrieved so paid TTS never starts. Never
-    returns Remotion graphic placeholders for production.
+    mandatory photograph cannot be retrieved so paid TTS never starts. License
+    metadata is optional. Never returns Remotion graphic placeholders for production.
     """
 
     from app.reels.photos import PhotoError, retrieve_licensed_photos_for_script

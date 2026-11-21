@@ -83,7 +83,7 @@ def test_download_image_success_and_failure(tmp_path: Path) -> None:
         download_image("https://example.org/fail.jpg", tmp_path / "x.jpg", transport=transport, retries=1)
 
 
-def test_search_openverse_filters_noncommercial(tmp_path: Path) -> None:
+def test_search_openverse_accepts_without_license_filter(tmp_path: Path) -> None:
     body = {
         "results": [
             {
@@ -100,9 +100,9 @@ def test_search_openverse_filters_noncommercial(tmp_path: Path) -> None:
                 "attribution": "A / CC BY 2.0",
             },
             {
-                "title": "bad-nc",
-                "url": "https://live.staticflickr.com/1/bad.jpg",
-                "foreign_landing_url": "https://flickr.com/bad",
+                "title": "nc-ok-now",
+                "url": "https://live.staticflickr.com/1/nc.jpg",
+                "foreign_landing_url": "https://flickr.com/nc",
                 "creator": "B",
                 "license": "by-nc",
                 "license_version": "2.0",
@@ -111,16 +111,43 @@ def test_search_openverse_filters_noncommercial(tmp_path: Path) -> None:
                 "width": 1000,
                 "height": 800,
             },
+            {
+                "title": "no-meta",
+                "url": "https://live.staticflickr.com/1/none.jpg",
+                "foreign_landing_url": "https://flickr.com/none",
+                "creator": "",
+                "license": "",
+                "license_version": "",
+                "license_url": "",
+                "provider": "flickr",
+                "width": 1000,
+                "height": 800,
+            },
+            {
+                "title": "too-small",
+                "url": "https://live.staticflickr.com/1/tiny.jpg",
+                "foreign_landing_url": "https://flickr.com/tiny",
+                "creator": "C",
+                "license": "by",
+                "license_version": "2.0",
+                "license_url": "https://creativecommons.org/licenses/by/2.0/",
+                "provider": "flickr",
+                "width": 320,
+                "height": 240,
+            },
         ]
     }
 
     def transport(request, timeout):
         return json.dumps(body).encode("utf-8")
 
-    found = search_openverse("Bundesrat", transport=transport)
-    assert len(found) == 1
-    assert found[0].license_name == "CC BY 2.0"
-    assert found[0].author == "A"
+    from app.reels.photos import SearchLog
+
+    log = SearchLog()
+    found = search_openverse("Bundesrat", transport=transport, log=log)
+    assert len(found) == 3
+    assert {item.license_name for item in found} >= {"CC BY 2.0", "CC BY-NC 2.0", ""}
+    assert any(entry.get("action") == "reject_quality" for entry in log.entries)
 
 
 def test_require_photographic_assets_detects_missing_and_graphics(tmp_path: Path) -> None:
@@ -129,20 +156,21 @@ def test_require_photographic_assets_detects_missing_and_graphics(tmp_path: Path
     ok = {
         "path": str(photo),
         "source_url": "https://example.org/p",
-        "author": "Photographer",
-        "license_name": "CC BY 2.0",
-        "license_url": "https://creativecommons.org/licenses/by/2.0/",
+        "author": "",
+        "license_name": "",
+        "license_url": "",
     }
     problems = require_photographic_assets(
         [ok, {"path": "", "license_name": "", "author": "", "source_url": "", "license_url": ""}],
         expected_scenes=2,
     )
     assert any("scene 2" in item for item in problems)
+    # Missing license/author metadata alone is not a problem.
+    assert require_photographic_assets([ok, ok, ok, ok], expected_scenes=4) == []
 
     graphic = {**ok, "license_name": "original-graphic"}
     problems = require_photographic_assets([ok, graphic, ok, ok], expected_scenes=4)
     assert any("graphic placeholder" in item for item in problems)
-    assert any("license" in item.lower() or "not accepted" in item.lower() for item in problems)
 
 
 def test_scene_asset_mapping_keeps_index_with_photos(tmp_path: Path) -> None:
@@ -501,7 +529,7 @@ def test_irrelevant_metadata_is_rejected(tmp_path: Path, monkeypatch) -> None:
     jpeg = tmp_path / "seed.jpg"
     _jpeg_bytes(jpeg)
     monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
-    with pytest.raises(PhotoError, match="no downloadable licensed photograph"):
+    with pytest.raises(PhotoError, match="no relevant photograph"):
         retrieve_licensed_photos_for_script(
             "Kindergeld rises to 259 euro",
             "Families in Germany keep Kindergeld.",
@@ -511,13 +539,13 @@ def test_irrelevant_metadata_is_rejected(tmp_path: Path, monkeypatch) -> None:
         )
 
 
-def test_licensed_unrelated_photos_are_never_accepted(tmp_path: Path, monkeypatch) -> None:
-    """Licensed-any fallback is forbidden: relevance stays mandatory."""
+def test_unrelated_photos_are_never_accepted(tmp_path: Path, monkeypatch) -> None:
+    """Relevance stays mandatory even when license metadata is complete."""
 
     jpeg = tmp_path / "seed.jpg"
     _jpeg_bytes(jpeg)
     monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
-    with pytest.raises(PhotoError, match="no downloadable licensed photograph"):
+    with pytest.raises(PhotoError, match="no relevant photograph"):
         collect_scene_photos(
             [["Kindergeld family benefits Germany"], ["calculator paperwork desk"]],
             tmp_path / "assets-unrelated",
@@ -530,7 +558,7 @@ def test_empty_relevance_terms_reject_all_candidates(tmp_path: Path, monkeypatch
     jpeg = tmp_path / "seed.jpg"
     _jpeg_bytes(jpeg)
     monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
-    with pytest.raises(PhotoError, match="no downloadable licensed photograph"):
+    with pytest.raises(PhotoError, match="no relevant photograph"):
         collect_scene_photos(
             [["Kindergeld Germany"]],
             tmp_path / "assets-empty-terms",
@@ -548,12 +576,20 @@ def test_relaxed_relevance_keeps_concrete_scene_terms() -> None:
 
 
 def test_searchable_visual_queries_prefer_short_noun_phrases() -> None:
-    from app.reels.photos import searchable_visual_queries
+    from app.reels.photos import searchable_visual_queries, topic_synonym_queries
 
     queries = searchable_visual_queries("a thoughtful person looking at a car factory")
     assert queries[0].casefold() == "car factory"
     assert "car factory Germany" in queries
-    assert queries[-1].startswith("a thoughtful") or "thoughtful" in queries[-2].casefold()
+    assert all("german germany" not in item.casefold() for item in queries)
+
+    weak = searchable_visual_queries("German Germany")
+    assert weak == []
+
+    synonyms = topic_synonym_queries("German automotive industry", "Factories face pressure.", "car plant")
+    flat_syn = " ".join(synonyms).casefold()
+    assert "volkswagen production line" in flat_syn
+    assert "car manufacturing workers" in flat_syn
 
     auto = build_scene_photo_queries(
         "Bilger fordert Bekenntnis der Autoindustrie zu Deutschland",
@@ -574,7 +610,8 @@ def test_searchable_visual_queries_prefer_short_noun_phrases() -> None:
     )
     flat = " ".join(auto[0]).casefold()
     assert "car factory" in flat
-    assert "assembly line" in flat or "automobile factory" in flat
+    assert "assembly" in flat or "volkswagen" in flat or "automobile factory" in flat
+    assert "german germany" not in flat
 
 
 def test_photo_failure_blocks_voice_before_elevenlabs(tmp_path: Path) -> None:
@@ -606,7 +643,7 @@ def test_photo_failure_blocks_voice_before_elevenlabs(tmp_path: Path) -> None:
             title_hint="Kindergeld", scenes=2
         ),
         find_assets=lambda candidate, script: (_ for _ in ()).throw(
-            PhotoError("no downloadable licensed photograph for scene 1")
+            PhotoError("no relevant photograph for scene 1")
         ),
         narrate=narrate,
         render_video=lambda *a, **k: (_ for _ in ()).throw(AssertionError("render must not run")),
@@ -617,18 +654,20 @@ def test_photo_failure_blocks_voice_before_elevenlabs(tmp_path: Path) -> None:
     assert voice_calls["n"] == 0
 
 
-def test_missing_license_url_is_rejected(tmp_path: Path, monkeypatch) -> None:
+def test_missing_license_metadata_is_accepted(tmp_path: Path, monkeypatch) -> None:
     jpeg = tmp_path / "seed.jpg"
     _jpeg_bytes(jpeg)
     monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
-    with pytest.raises(PhotoError, match="no downloadable licensed photograph"):
-        retrieve_licensed_photos_for_script(
-            "Kindergeld rises to 259 euro",
-            "Families in Germany keep Kindergeld.",
-            _story_script(title_hint="Kindergeld", scenes=1),
-            tmp_path / "assets-nolurl",
-            transport=_openverse_transport(jpeg.read_bytes(), mode="missing_license_url"),
-        )
+    assets = retrieve_licensed_photos_for_script(
+        "Kindergeld rises to 259 euro",
+        "Families in Germany keep Kindergeld.",
+        _story_script(title_hint="Kindergeld", scenes=1),
+        tmp_path / "assets-nolurl",
+        transport=_openverse_transport(jpeg.read_bytes(), mode="missing_license_url"),
+    )
+    assert len(assets) == 1
+    assert Path(assets[0]["path"]).is_file()
+    assert not assets[0].get("license_url")
 
 
 def test_retrieve_licensed_photos_matches_scene_count(tmp_path: Path) -> None:
@@ -647,18 +686,18 @@ def test_retrieve_licensed_photos_matches_scene_count(tmp_path: Path) -> None:
     for index, asset in enumerate(assets):
         assert Path(asset["path"]).is_file()
         assert f"scene-{index + 1:02d}" in Path(asset["path"]).name
-        assert asset["license_name"]
-        assert asset["author"]
         assert asset["source_url"]
     assert (tmp_path / "assets" / "image_search_log.json").is_file()
     assert (tmp_path / "assets" / "attribution_manifest.json").is_file()
+    log = json.loads((tmp_path / "assets" / "image_search_log.json").read_text(encoding="utf-8"))
+    assert any(entry.get("action") == "assigned" for entry in log)
 
 
 def test_missing_photographs_raise_and_log(tmp_path: Path, monkeypatch) -> None:
     jpeg = tmp_path / "seed.jpg"
     _jpeg_bytes(jpeg)
     monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
-    with pytest.raises(PhotoError, match="no downloadable licensed photograph"):
+    with pytest.raises(PhotoError, match="no relevant photograph"):
         retrieve_licensed_photos_for_script(
             "Unknown topic",
             "No images available.",
@@ -668,18 +707,20 @@ def test_missing_photographs_raise_and_log(tmp_path: Path, monkeypatch) -> None:
         )
 
 
-def test_invalid_licensing_blocks_retrieval(tmp_path: Path, monkeypatch) -> None:
+def test_nc_license_photos_are_accepted_when_relevant(tmp_path: Path, monkeypatch) -> None:
     jpeg = tmp_path / "seed.jpg"
     _jpeg_bytes(jpeg)
     monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
-    with pytest.raises(PhotoError, match="no downloadable licensed photograph"):
-        retrieve_licensed_photos_for_script(
-            "Restricted topic",
-            "Only NC licenses.",
-            _story_script(title_hint="Restricted", scenes=2),
-            tmp_path / "assets-nc",
-            transport=_openverse_transport(jpeg.read_bytes(), mode="nc_only"),
-        )
+    assets = retrieve_licensed_photos_for_script(
+        "Restricted topic Kindergeld",
+        "Only NC licenses Kindergeld families.",
+        _story_script(title_hint="Kindergeld", scenes=2),
+        tmp_path / "assets-nc",
+        transport=_openverse_transport(jpeg.read_bytes(), mode="nc_only"),
+    )
+    assert len(assets) == 2
+    assert all(Path(asset["path"]).is_file() for asset in assets)
+    assert all("NC" in str(asset.get("license_name") or "").upper() for asset in assets)
 
 
 def test_download_failure_is_logged(tmp_path: Path, monkeypatch) -> None:
@@ -687,7 +728,7 @@ def test_download_failure_is_logged(tmp_path: Path, monkeypatch) -> None:
     _jpeg_bytes(jpeg)
     dest = tmp_path / "assets-fail"
     monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
-    with pytest.raises(PhotoError, match="no downloadable licensed photograph|download"):
+    with pytest.raises(PhotoError, match="no relevant photograph|download"):
         retrieve_licensed_photos_for_script(
             "Download fail topic",
             "Images cannot be fetched.",
@@ -696,6 +737,128 @@ def test_download_failure_is_logged(tmp_path: Path, monkeypatch) -> None:
             transport=_openverse_transport(jpeg.read_bytes(), mode="download_fail"),
         )
     assert not (dest / "scene-01.jpg").is_file()
+    log = json.loads((dest / "image_search_log.json").read_text(encoding="utf-8"))
+    assert any(entry.get("action") == "download_failed" for entry in log)
+
+
+def test_corrupt_image_is_rejected(tmp_path: Path, monkeypatch) -> None:
+    from app.reels.photos import SearchLog
+
+    dest = tmp_path / "assets-corrupt"
+    monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
+
+    def transport(request, timeout):
+        url = request.full_url
+        if "api.openverse.org" in url:
+            return json.dumps(
+                {
+                    "results": [
+                        {
+                            "title": "Kindergeld family benefits",
+                            "url": "https://live.staticflickr.com/1/corrupt.jpg",
+                            "foreign_landing_url": "https://flickr.com/corrupt",
+                            "creator": "",
+                            "license": "",
+                            "license_url": "",
+                            "provider": "flickr",
+                            "width": 1200,
+                            "height": 900,
+                            "tags": [{"name": "Kindergeld"}, {"name": "family"}],
+                            "description": "Kindergeld family benefits",
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+        if "commons.wikimedia.org" in url:
+            return json.dumps({"query": {"pages": {}}}).encode("utf-8")
+        return b"<html>not an image</html>" + (b"x" * 3000)
+
+    log = SearchLog()
+    with pytest.raises(PhotoError, match="no relevant photograph"):
+        collect_scene_photos(
+            [["Kindergeld family benefits Germany"]],
+            dest,
+            transport=transport,
+            relevance_terms=[["Kindergeld", "family", "benefits"]],
+            log=log,
+        )
+    assert any(entry.get("action") == "download_failed" for entry in log.entries)
+
+
+def test_duplicate_images_are_skipped_across_scenes(tmp_path: Path, monkeypatch) -> None:
+    jpeg = tmp_path / "seed.jpg"
+    _jpeg_bytes(jpeg)
+    monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
+    counter = {"n": 0}
+
+    def transport(request, timeout):
+        url = request.full_url
+        if "api.openverse.org" in url:
+            counter["n"] += 1
+            # Same download URL for every search hit so scene 2 must skip the duplicate.
+            return json.dumps(
+                {
+                    "results": [
+                        {
+                            "title": "Kindergeld family benefits shared",
+                            "url": "https://live.staticflickr.com/1/shared.jpg",
+                            "foreign_landing_url": "https://flickr.com/shared",
+                            "creator": "",
+                            "license": "",
+                            "license_url": "",
+                            "provider": "flickr",
+                            "width": 1200,
+                            "height": 900,
+                            "tags": [{"name": "Kindergeld"}, {"name": "family"}, {"name": "benefits"}],
+                            "description": "Kindergeld family benefits",
+                        },
+                        {
+                            "title": "Kindergeld family benefits alternate",
+                            "url": f"https://live.staticflickr.com/1/alt-{counter['n']}.jpg",
+                            "foreign_landing_url": f"https://flickr.com/alt-{counter['n']}",
+                            "creator": "",
+                            "license": "",
+                            "license_url": "",
+                            "provider": "flickr",
+                            "width": 1200,
+                            "height": 900,
+                            "tags": [{"name": "Kindergeld"}, {"name": "family"}],
+                            "description": "Kindergeld family benefits",
+                        },
+                    ]
+                }
+            ).encode("utf-8")
+        if "commons.wikimedia.org" in url:
+            return json.dumps({"query": {"pages": {}}}).encode("utf-8")
+        return jpeg.read_bytes()
+
+    from app.reels.photos import SearchLog
+
+    log = SearchLog()
+    assets, log = collect_scene_photos(
+        [["Kindergeld family benefits Germany"], ["Kindergeld family benefits Germany"]],
+        tmp_path / "assets-dup",
+        transport=transport,
+        relevance_terms=[["Kindergeld", "family", "benefits"], ["Kindergeld", "family", "benefits"]],
+        log=log,
+    )
+    assert len(assets) == 2
+    assert assets[0].download_url != assets[1].download_url
+    assert any(entry.get("action") == "reject_duplicate" for entry in log.entries)
+
+
+def test_license_evidence_problems_is_noop() -> None:
+    from app.reels.photos import license_evidence_problems
+
+    assert (
+        license_evidence_problems(
+            license_name="",
+            license_url="",
+            source_url="",
+            author="",
+        )
+        == []
+    )
 
 
 def test_find_licensed_assets_uses_photo_service(tmp_path: Path) -> None:
@@ -748,13 +911,13 @@ def test_pipeline_missing_photos_fail_before_tts(tmp_path: Path) -> None:
         candidates=[candidate],
         verify_source=lambda item: {"ok": True, "excerpt": item.summary},
         write_script=lambda candidate, checked, paid_generation: _story_script(),
-        find_assets=lambda candidate, script: (_ for _ in ()).throw(PhotoError("no downloadable licensed photograph")),
+        find_assets=lambda candidate, script: (_ for _ in ()).throw(PhotoError("no relevant photograph")),
         narrate=narrate,
         render_video=lambda *a, **k: (_ for _ in ()).throw(AssertionError("render")),
         probe_video=lambda path: (_ for _ in ()).throw(AssertionError("probe")),
     )
     assert result.status == "failed"
-    assert "photograph" in result.message.lower() or "no downloadable" in result.message.lower()
+    assert "photograph" in result.message.lower()
     assert voice_calls == []
     reel = store.get(result.reel_id)
     assert reel is not None
@@ -1010,7 +1173,7 @@ def test_photo_failure_never_queues_or_calls_tts(tmp_path: Path, monkeypatch) ->
     )
     monkeypatch.setattr(
         "app.reels.commands.find_licensed_assets",
-        lambda candidate, script, **kwargs: (_ for _ in ()).throw(PhotoError("no downloadable licensed photograph")),
+        lambda candidate, script, **kwargs: (_ for _ in ()).throw(PhotoError("no relevant photograph")),
     )
     tts_calls: list[str] = []
     monkeypatch.setattr(
@@ -1139,7 +1302,7 @@ def test_realistic_photo_remotion_integration(tmp_path: Path, monkeypatch) -> No
         )
         assert len(assets) == 4
         assert all(Path(asset["path"]).is_file() for asset in assets)
-        assert all(asset.get("license_url") for asset in assets)
+        assert all(asset.get("source_url") for asset in assets)
 
         # Preserve saved Aran narration without copying onto itself issues.
         audio_dir = out_dir / "audio"
