@@ -60,9 +60,17 @@ def build_fact_pack(
     for sentence in _sentences(clean_summary):
         facts.append({"text": sentence, "source_urls": [url]})
     if clean_excerpt:
-        for sentence in _sentences(clean_excerpt)[:4]:
-            if sentence not in {item["text"] for item in facts}:
+        seen = {item["text"] for item in facts}
+        # Prefer figure-bearing sentences first, then fill with remaining excerpt lines.
+        excerpt_sentences = _sentences(clean_excerpt)
+        ranked = sorted(
+            excerpt_sentences,
+            key=lambda sentence: (0 if _sentence_has_figure(sentence) else 1, excerpt_sentences.index(sentence)),
+        )
+        for sentence in ranked[:12]:
+            if sentence not in seen:
                 facts.append({"text": sentence, "source_urls": [url]})
+                seen.add(sentence)
     if not facts:
         facts.append({"text": clean_title or url, "source_urls": [url]})
     return {
@@ -71,7 +79,7 @@ def build_fact_pack(
         "retrieved_at": stamp.isoformat(),
         "event_summary": clean_summary or clean_title,
         "sources": [source],
-        "verified_facts": facts,
+        "verified_facts": facts[:16],
         "uncertainties": [],
         "duplicate_risk": "none known",
     }
@@ -265,7 +273,29 @@ def parse_model_story_package(payload: Mapping[str, Any] | str) -> dict[str, Any
         data = json.loads(text)
     if not isinstance(data, dict):
         raise GroundingError("model response was not a JSON object")
-    return data
+    return _coerce_scenes_list(data)
+
+
+def _coerce_scenes_list(package: dict[str, Any]) -> dict[str, Any]:
+    """Deterministically convert scenes objects/maps into ordered lists when possible."""
+
+    scenes = package.get("scenes")
+    if isinstance(scenes, list) or scenes is None:
+        return package
+    if not isinstance(scenes, Mapping):
+        return package
+    items = list(scenes.items())
+
+    def _sort_key(pair: tuple[Any, Any]) -> tuple[int, str]:
+        key = str(pair[0])
+        digits = re.sub(r"\D+", "", key)
+        return (int(digits) if digits else 10_000, key)
+
+    ordered = [value for _, value in sorted(items, key=_sort_key) if isinstance(value, Mapping)]
+    if ordered:
+        package = dict(package)
+        package["scenes"] = ordered
+    return package
 
 
 def normalize_story_package(
@@ -451,6 +481,22 @@ def finalize_model_story_package(
 _finalize_package = finalize_model_story_package
 
 
+def _errors_need_llm_rewrite(errors: list[str]) -> bool:
+    """Return False when failures are factual figure mismatches Python already judged.
+
+    Unsupported numbers must reject the script. Do not spend a second OpenAI call
+    hoping the model invents a rewrite for a grounding failure.
+    """
+
+    if not errors:
+        return False
+    factual_markers = (
+        "introduces figures not in the fact pack",
+        "figures that are not in the source",
+    )
+    return not all(any(marker in error for marker in factual_markers) for error in errors)
+
+
 def generate_persian_story_package(
     fact_pack: Mapping[str, Any],
     editorial: Mapping[str, Any],
@@ -459,8 +505,9 @@ def generate_persian_story_package(
 ) -> dict[str, Any]:
     """Ask the completer for a story package and ground-check the result.
 
-    On invalid structure, performs at most one correction call with the
-    validation errors. Never invents missing narration scenes locally.
+    On structural/content validation failures, performs at most one correction
+    call. Pure unsupported-figure failures reject immediately without an LLM
+    rewrite. Never invents missing narration scenes locally.
     """
 
     if fact_pack.get("status") != "READY":
@@ -478,6 +525,10 @@ def generate_persian_story_package(
         return package
     except GroundingError as first_error:
         errors = [part.strip() for part in str(first_error).split(";") if part.strip()]
+        if not _errors_need_llm_rewrite(errors):
+            raise GroundingError(
+                f"{first_error} (openai_script_calls={calls}; llm_correction_skipped=factual_figures)"
+            ) from first_error
         retry_prompt = correction_prompt(
             fact_pack,
             editorial,
@@ -566,7 +617,15 @@ def _event_id(url: str, title: str) -> str:
 def _sentences(text: str) -> list[str]:
     if not text:
         return []
-    return [part.strip() for part in _SENTENCE.split(text) if part.strip()]
+    # Split on Latin and common Persian/Arabic sentence punctuation.
+    parts = re.split(r"(?<=[.!?؟۔])\s+", text)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _sentence_has_figure(text: str) -> bool:
+    from app.services.grounding import extract_numbers
+
+    return bool(extract_numbers(text))
 
 
 def _fact_pack_text(fact_pack: Mapping[str, Any]) -> str:

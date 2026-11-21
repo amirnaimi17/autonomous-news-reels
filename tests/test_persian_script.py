@@ -282,9 +282,10 @@ def test_ungrounded_figures_are_rejected() -> None:
 
     with pytest.raises(GroundingError) as raised:
         generate_persian_story_package(fact_pack, editorial, complete=complete)
-    assert calls["n"] == 2
+    # Unsupported figures reject immediately — no wasted OpenAI rewrite call.
+    assert calls["n"] == 1
     assert "figures" in str(raised.value).lower() or "999" in str(raised.value)
-    assert "after correction" in str(raised.value).lower()
+    assert "llm_correction_skipped" in str(raised.value)
 
 
 def test_pipeline_stores_script_then_blocks_voice_without_paid_generation(tmp_path: Path) -> None:
@@ -503,7 +504,9 @@ def test_valid_story_package_accepted() -> None:
     assert claim_grounding_errors(package, fact_pack) == []
 
 
-def test_correction_succeeds_after_one_invalid_response() -> None:
+def test_scenes_object_is_coerced_without_llm_correction() -> None:
+    """Deterministic Python coercion replaces an OpenAI rewrite for scenes maps."""
+
     now = datetime(2026, 11, 19, 10, 0, tzinfo=timezone.utc)
     candidate = _candidate(now)
     fact_pack = build_fact_pack(
@@ -515,21 +518,67 @@ def test_correction_succeeds_after_one_invalid_response() -> None:
     )
     editorial = build_editorial_brief(fact_pack, title=candidate.title, summary=candidate.summary)
     good = _mock_package(fact_pack)
-    bad = dict(good)
-    bad["scenes"] = {str(i + 1): scene for i, scene in enumerate(good["scenes"])}
-    responses = [bad, good]
-    prompts: list[str] = []
+    as_map = dict(good)
+    as_map["scenes"] = {str(i + 1): scene for i, scene in enumerate(good["scenes"])}
+    calls = {"n": 0}
 
     def complete(prompt: str, context: dict) -> dict:
-        prompts.append(prompt)
-        assert context.get("attempt") in {1, 2}
-        return responses.pop(0)
+        del prompt, context
+        calls["n"] += 1
+        return as_map
 
     package = generate_persian_story_package(fact_pack, editorial, complete=complete)
     assert isinstance(package["scenes"], list)
-    assert package["_openai_script_calls"] == 2
-    assert "VALIDATION_ERRORS" in prompts[1]
-    assert "must be a list" in prompts[1]
+    assert len(package["scenes"]) == 4
+    assert calls["n"] == 1
+    assert package["_openai_script_calls"] == 1
+
+
+def test_unsupported_figures_skip_llm_correction() -> None:
+    now = datetime(2026, 11, 19, 10, 0, tzinfo=timezone.utc)
+    candidate = _candidate(now)
+    fact_pack = build_fact_pack(
+        title=candidate.title,
+        summary=candidate.summary,
+        url=candidate.url,
+        publisher=candidate.publisher,
+        published_at=candidate.published_at,
+    )
+    editorial = build_editorial_brief(fact_pack, title=candidate.title, summary=candidate.summary)
+    bad = _mock_package(fact_pack)
+    bad["scenes"] = [dict(scene) for scene in bad["scenes"]]
+    bad["scenes"][1]["narration"] = "رقم ساختگی ۹۹۹ یورو در بسته حقایق نیست."
+    calls = {"n": 0}
+
+    def complete(prompt: str, context: dict) -> dict:
+        del prompt, context
+        calls["n"] += 1
+        return bad
+
+    with pytest.raises(GroundingError) as raised:
+        generate_persian_story_package(fact_pack, editorial, complete=complete)
+    assert calls["n"] == 1
+    assert "llm_correction_skipped" in str(raised.value)
+    assert "۹۹۹" in str(raised.value) or "999" in str(raised.value)
+
+
+def test_persian_digits_in_narration_match_ascii_fact_pack() -> None:
+    now = datetime(2026, 11, 19, 10, 0, tzinfo=timezone.utc)
+    candidate = _candidate(now)
+    fact_pack = build_fact_pack(
+        title=candidate.title,
+        summary=candidate.summary,
+        url=candidate.url,
+        publisher=candidate.publisher,
+        published_at=candidate.published_at,
+        excerpt="Kindergeld rises to 259 euro per child from January 2026.",
+    )
+    package = _mock_package(fact_pack)
+    # Narration uses Persian digits for the same supported figure.
+    package["scenes"][1]["narration"] = (
+        "به گزارش بوندس‌رگیرونگ، از ژانویه ۲۰۲۶ این مبلغ به ۲۵۹ یورو برای هر کودک می‌رسد."
+    )
+    assert claim_grounding_errors(package, fact_pack) == []
 
 
 def test_correction_fails_after_second_invalid_response() -> None:

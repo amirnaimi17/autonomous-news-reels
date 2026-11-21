@@ -58,3 +58,20 @@ def test_plain_text_and_grounding() -> None:
     assert numbers_missing_from_source("About 300 people were there.", source) == ["300"]
     with pytest.raises(GroundingError):
         require_grounded_numbers("About 300 people were there.", source)
+
+
+def test_persian_and_arabic_digits_match_ascii_source() -> None:
+    from app.services.grounding import extract_numbers, normalize_numeral
+
+    assert normalize_numeral("۲۵") == normalize_numeral("25") == normalize_numeral("٢٥") == "25"
+    assert normalize_numeral("۱٬۲۵۰") == "1250"
+    assert normalize_numeral("۲٪") == "2"
+    assert extract_numbers("مبلغ ۲۵ یورو و ٢٥ درصد") == ["۲۵", "٢٥"]
+    source = "The benefit rises to 25 euro from January 2026."
+    assert numbers_missing_from_source("کمک‌هزینه به ۲۵ یورو می‌رسد.", source) == []
+    assert numbers_missing_from_source("کمک‌هزینه به ٢٥ یورو می‌رسد.", source) == []
+    assert numbers_missing_from_source("About 25% growth", "رشد ۲۵٪ اعلام شد") == []
+    # Genuinely unsupported figures still fail.
+    assert numbers_missing_from_source("مبلغ ۳۰۰ یورو", source) == ["۳۰۰"]
+    with pytest.raises(GroundingError):
+        require_grounded_numbers("مبلغ ۳۰۰ یورو", source)

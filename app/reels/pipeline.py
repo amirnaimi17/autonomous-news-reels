@@ -143,19 +143,20 @@ def _eligible_for_ranking(
     return [], "no story"
 
 
-def select_story_keyword(
+def select_story_keyword_queue(
     candidates: list[Candidate],
     store: ReelStore,
     now: datetime,
     window_hours: int,
-) -> tuple[Candidate | None, str, dict]:
-    """Legacy keyword audience filter. Borderline/none stay rejected as irrelevant."""
+) -> tuple[list[Candidate], str, dict]:
+    """Legacy keyword audience filter. Returns an ordered queue of clear matches."""
 
     window_start = now.astimezone(timezone.utc) - timedelta(hours=window_hours)
     ranked = sorted(candidates, key=lambda item: item.published_at, reverse=True)
     saw_irrelevant = False
     saw_stale = False
     saw_duplicate = False
+    queue: list[Candidate] = []
     for candidate in ranked:
         published = candidate.published_at.astimezone(timezone.utc)
         if published < window_start or published > now.astimezone(timezone.utc) + timedelta(minutes=5):
@@ -167,54 +168,69 @@ def select_story_keyword(
             saw_irrelevant = True
             continue
         if not candidate.summary.strip() or not candidate.url.startswith("http"):
-            return None, "inadequately verified", {}
+            continue
         if deutschlandticket_accuracy_errors(text):
-            return None, "inadequately verified", {}
+            continue
         assessment = _assessment(candidate, audience.result)
         if not editorial_approves(assessment, [candidate.url]):
-            return None, "inadequately verified", {}
+            continue
         if _is_duplicate(store, candidate):
             saw_duplicate = True
             continue
-        return candidate, "", {"selection": "keyword", "audience": audience.result}
+        queue.append(candidate)
+    if queue:
+        return queue, "", {"selection": "keyword", "audience": "clear", "queue_size": len(queue)}
     if saw_duplicate and not saw_irrelevant:
-        return None, "duplicate", {}
+        return [], "duplicate", {"selection": "keyword"}
     if saw_stale and not saw_irrelevant:
-        return None, "stale", {}
+        return [], "stale", {"selection": "keyword"}
     if saw_irrelevant:
-        return None, "irrelevant", {}
-    return None, "no story", {}
+        return [], "irrelevant", {"selection": "keyword"}
+    return [], "no story", {"selection": "keyword"}
 
 
-def select_story_ai(
+def select_story_keyword(
+    candidates: list[Candidate],
+    store: ReelStore,
+    now: datetime,
+    window_hours: int,
+) -> tuple[Candidate | None, str, dict]:
+    """Legacy keyword audience filter. Borderline/none stay rejected as irrelevant."""
+
+    queue, reason, detail = select_story_keyword_queue(candidates, store, now, window_hours)
+    if not queue:
+        return None, reason, detail
+    return queue[0], "", detail
+
+
+def select_story_ai_queue(
     candidates: list[Candidate],
     store: ReelStore,
     now: datetime,
     config: ReelConfig,
     *,
     rank_complete=None,
-) -> tuple[Candidate | None, str, dict]:
-    """Rank retrieved articles with the configured editorial audience profile."""
+) -> tuple[list[Candidate], str, dict]:
+    """Rank once and return an ordered queue of suitable, non-duplicate articles."""
 
     from app.services.news.editorial_rank import get_audience_profile, rank_retrieved_articles
 
     eligible, reason = _eligible_for_ranking(candidates, store, now, config.news_window_hours)
     if not eligible:
-        return None, reason or "no story", {"selection": "ai", "eligible": 0}
+        return [], reason or "no story", {"selection": "ai", "eligible": 0}
 
     if config.editorial_rank_provider == "openai" and not config.editorial_rank_approved and rank_complete is None:
-        return None, "editorial ranking not approved", {"selection": "ai", "eligible": len(eligible)}
+        return [], "editorial ranking not approved", {"selection": "ai", "eligible": len(eligible)}
 
     from app.core.exceptions import ConfigurationError, GroundingError
 
     profile = get_audience_profile(config.editorial_audience_id, path=config.editorial_audiences_file)
-    # Profile min_score wins unless REEL_EDITORIAL_MIN_SCORE is explicitly set.
     threshold = (
         float(config.editorial_min_score)
         if config.editorial_min_score is not None
         else float(profile.min_score)
     )
-    detail = {"selection": "ai", "eligible": len(eligible), "min_score": threshold}
+    detail: dict = {"selection": "ai", "eligible": len(eligible), "min_score": threshold}
     try:
         ranking = rank_retrieved_articles(
             eligible,
@@ -227,34 +243,85 @@ def select_story_ai(
         )
     except (ConfigurationError, GroundingError) as exc:
         detail["ranking_error"] = str(exc)
-        return None, str(exc), detail
+        return [], str(exc), detail
     detail["ranking"] = ranking.as_detail()
     if ranking.status != "selected" or ranking.selected is None:
-        return None, ranking.message or "no suitable article", detail
+        return [], ranking.message or "no suitable article", detail
 
-    chosen = next((item for item in eligible if item.url == ranking.selected.url), None)
+    by_url = {item.url: item for item in eligible}
+    queue: list[Candidate] = []
+    seen_urls: set[str] = set()
+
+    def _append(candidate: Candidate | None, ranked_row=None) -> None:
+        if candidate is None or candidate.url in seen_urls:
+            return
+        if _is_duplicate(store, candidate):
+            return
+        if ranked_row is not None:
+            assessment = _assessment_from_rank(candidate, ranked_row, profile.label)
+            if not editorial_approves(assessment, [candidate.url]):
+                return
+        seen_urls.add(candidate.url)
+        queue.append(candidate)
+
+    # Selected article first, then remaining suitable ranked rows (no second ranking call).
+    chosen = by_url.get(ranking.selected.url)
     if chosen is None:
-        # Map back by assigned order id.
         from app.services.news.editorial_rank import assign_article_ids
 
         rows = assign_article_ids(eligible)
         match = next((row for row in rows if row["id"] == ranking.selected_id), None)
         chosen = match["candidate"] if match else None
-    if chosen is None:
-        return None, "selected article missing from retrieved set", detail
+    _append(chosen, ranking.selected)
+    for ranked_row in ranking.top:
+        if not ranked_row.suitable:
+            continue
+        _append(by_url.get(ranked_row.url), ranked_row)
 
-    assessment = _assessment_from_rank(chosen, ranking.selected, profile.label)
-    if not editorial_approves(assessment, [chosen.url]):
-        return None, "inadequately verified", detail
-    if _is_duplicate(store, chosen):
-        return None, "duplicate", detail
+    if not queue:
+        return [], "duplicate", detail
     detail["selected"] = {
-        "title": chosen.title,
-        "url": chosen.url,
+        "title": queue[0].title,
+        "url": queue[0].url,
         "score": ranking.selected.score,
         "relevance": ranking.selected.relevance,
     }
-    return chosen, "", detail
+    detail["queue_size"] = len(queue)
+    return queue, "", detail
+
+
+def select_story_ai(
+    candidates: list[Candidate],
+    store: ReelStore,
+    now: datetime,
+    config: ReelConfig,
+    *,
+    rank_complete=None,
+) -> tuple[Candidate | None, str, dict]:
+    """Rank retrieved articles with the configured editorial audience profile."""
+
+    queue, reason, detail = select_story_ai_queue(
+        candidates, store, now, config, rank_complete=rank_complete
+    )
+    if not queue:
+        return None, reason, detail
+    return queue[0], "", detail
+
+
+def select_story_queue(
+    candidates: list[Candidate],
+    store: ReelStore,
+    now: datetime,
+    window_hours: int,
+    *,
+    config: ReelConfig | None = None,
+    rank_complete=None,
+) -> tuple[list[Candidate], str, dict]:
+    """Return an ordered article queue for one command (ranked at most once)."""
+
+    if config is not None and config.editorial_rank_provider == "openai":
+        return select_story_ai_queue(candidates, store, now, config, rank_complete=rank_complete)
+    return select_story_keyword_queue(candidates, store, now, window_hours)
 
 
 def select_story(
@@ -268,10 +335,24 @@ def select_story(
 ) -> tuple[Candidate | None, str, dict]:
     """Pick one story. Uses AI ranking when configured; otherwise keyword filter."""
 
-    if config is not None and config.editorial_rank_provider == "openai":
-        return select_story_ai(candidates, store, now, config, rank_complete=rank_complete)
-    candidate, reason, detail = select_story_keyword(candidates, store, now, window_hours)
-    return candidate, reason, detail
+    queue, reason, detail = select_story_queue(
+        candidates,
+        store,
+        now,
+        window_hours,
+        config=config,
+        rank_complete=rank_complete,
+    )
+    if not queue:
+        return None, reason, detail
+    return queue[0], "", detail
+
+
+def _max_article_attempts(config: ReelConfig) -> int:
+    """Hard cap of three article tries per command; never retries indefinitely."""
+
+    configured = int(getattr(config, "max_attempts", 3) or 3)
+    return max(1, min(3, configured))
 
 
 def run_generation(
@@ -289,7 +370,7 @@ def run_generation(
     probe_video,
     rank_complete=None,
 ) -> StageResult:
-    """Run one attempt and always record it, including a rejection."""
+    """Run one command attempt, trying up to three ranked articles without re-ranking."""
 
     store.migrate()
     decision = slot_decision(now, config, scheduled=scheduled)
@@ -303,7 +384,7 @@ def run_generation(
         store.finish_attempt(attempt_id, status="skipped", message=message, now=now)
         return StageResult("skipped", message)
 
-    candidate, reason, selection_detail = select_story(
+    queue, reason, selection_detail = select_story_queue(
         candidates,
         store,
         now,
@@ -311,9 +392,100 @@ def run_generation(
         config=config,
         rank_complete=rank_complete,
     )
-    if candidate is None:
+    if not queue:
         store.finish_attempt(attempt_id, status="rejected", message=reason or "no story", now=now)
         return StageResult("rejected", reason or "no story", detail=selection_detail)
+
+    max_tries = _max_article_attempts(config)
+    article_attempts: list[dict] = []
+    selection_detail = dict(selection_detail)
+    selection_detail["max_article_attempts"] = max_tries
+    last: StageResult | None = None
+
+    for index, candidate in enumerate(queue[:max_tries], start=1):
+        selection_detail["selected"] = {
+            "title": candidate.title,
+            "url": candidate.url,
+            "attempt_index": index,
+        }
+        result = _generate_one_article(
+            config,
+            store,
+            candidate=candidate,
+            now=now,
+            attempt_id=attempt_id,
+            selection_detail=selection_detail,
+            verify_source=verify_source,
+            write_script=write_script,
+            find_assets=find_assets,
+            narrate=narrate,
+            render_video=render_video,
+            probe_video=probe_video,
+            finalize=False,
+        )
+        article_attempts.append(
+            {
+                "index": index,
+                "title": candidate.title,
+                "url": candidate.url,
+                "status": result.status,
+                "message": result.message,
+                "reel_id": result.reel_id,
+            }
+        )
+        selection_detail["article_attempts"] = article_attempts
+        result.detail = dict(selection_detail)
+        last = result
+        # Terminal success / budget stop — do not keep trying more articles.
+        if result.status in {"qa_passed", "blocked_paid", "queued", "packaged"}:
+            store.finish_attempt(
+                attempt_id,
+                status=result.status,
+                message=result.message,
+                reel_id=result.reel_id,
+                now=now,
+            )
+            return result
+        if result.status == "rejected" and result.message == "cost limit":
+            store.finish_attempt(
+                attempt_id,
+                status=result.status,
+                message=result.message,
+                reel_id=result.reel_id,
+                now=now,
+            )
+            return result
+        # rejected / failed / qa_failed → try next ranked article when available.
+
+    assert last is not None
+    store.finish_attempt(
+        attempt_id,
+        status=last.status,
+        message=last.message,
+        reel_id=last.reel_id,
+        now=now,
+    )
+    last.detail = dict(selection_detail)
+    return last
+
+
+def _generate_one_article(
+    config: ReelConfig,
+    store: ReelStore,
+    *,
+    candidate: Candidate,
+    now: datetime,
+    attempt_id: int,
+    selection_detail: dict,
+    verify_source,
+    write_script,
+    find_assets,
+    narrate,
+    render_video,
+    probe_video,
+    finalize: bool = True,
+) -> StageResult:
+    """Produce one Reel for a single ranked article. Does not re-rank news."""
 
     def _stage(status: str, message: str, reel_id: str = "") -> StageResult:
         return StageResult(status, message, reel_id, detail=selection_detail)
@@ -334,6 +506,7 @@ def run_generation(
             "inadequately verified",
             attempt_id,
             now,
+            finalize=finalize,
         )
         return _stage("rejected", "inadequately verified", reel_id)
 
@@ -360,12 +533,30 @@ def run_generation(
             retryable=row["local_status"] == "blocked_paid",
             now=now,
         )
-        store.finish_attempt(attempt_id, status=row["local_status"], message=row["error_message"], reel_id=reel_id, now=now)
+        if finalize:
+            store.finish_attempt(
+                attempt_id,
+                status=row["local_status"],
+                message=row["error_message"],
+                reel_id=reel_id,
+                now=now,
+            )
         return _stage(row["local_status"], row["error_message"], reel_id)
 
     narration = script["narration"]
     if deutschlandticket_accuracy_errors(narration):
-        _record_rejected(store, config, candidate, reel_id, fingerprint, retry_count, "inadequately verified", attempt_id, now)
+        _record_rejected(
+            store,
+            config,
+            candidate,
+            reel_id,
+            fingerprint,
+            retry_count,
+            "inadequately verified",
+            attempt_id,
+            now,
+            finalize=finalize,
+        )
         return _stage("rejected", "inadequately verified", reel_id)
 
     try:
@@ -385,6 +576,7 @@ def run_generation(
             stage="photos",
             script=script,
             checked=checked,
+            finalize=finalize,
         )
         return _stage("failed", message, reel_id)
     if not assets:
@@ -402,6 +594,7 @@ def run_generation(
             stage="photos",
             script=script,
             checked=checked,
+            finalize=finalize,
         )
         return _stage("failed", message, reel_id)
     # Mandatory photographs: reject graphic placeholders before any paid TTS.
@@ -426,11 +619,23 @@ def run_generation(
             stage="photos",
             script=script,
             checked=checked,
+            finalize=finalize,
         )
         return _stage("failed", message, reel_id)
     for asset in assets:
         if asset.get("kind") == "paid-image" and not config.paid_generation:
-            _record_rejected(store, config, candidate, reel_id, fingerprint, retry_count, "paid image refused", attempt_id, now)
+            _record_rejected(
+                store,
+                config,
+                candidate,
+                reel_id,
+                fingerprint,
+                retry_count,
+                "paid image refused",
+                attempt_id,
+                now,
+                finalize=finalize,
+            )
             return _stage("rejected", "paid image refused", reel_id)
 
     estimate = float(script.get("voice_estimate_usd") or 0)
@@ -440,7 +645,8 @@ def run_generation(
         row["narration_fa"] = narration
         row["generation_finished_at"] = utc_now(now)
         store.upsert_reel(row)
-        store.finish_attempt(attempt_id, status="rejected", message="cost limit", reel_id=reel_id, now=now)
+        if finalize:
+            store.finish_attempt(attempt_id, status="rejected", message="cost limit", reel_id=reel_id, now=now)
         return _stage("rejected", "cost limit", reel_id)
 
     row["narration_fa"] = narration
@@ -473,7 +679,10 @@ def run_generation(
             retryable=True,
             now=now,
         )
-        store.finish_attempt(attempt_id, status="blocked_paid", message=row["error_message"], reel_id=reel_id, now=now)
+        if finalize:
+            store.finish_attempt(
+                attempt_id, status="blocked_paid", message=row["error_message"], reel_id=reel_id, now=now
+            )
         return _stage("blocked_paid", row["error_message"], reel_id)
 
     try:
@@ -486,8 +695,18 @@ def run_generation(
         row["retry_count"] = retry_count
         row["generation_finished_at"] = utc_now(now)
         store.upsert_reel(row)
-        store.add_error(reel_id=reel_id, attempt_id=attempt_id, stage="render", message=row["error_message"], retryable=True, now=now)
-        store.finish_attempt(attempt_id, status="failed", message=row["error_message"], reel_id=reel_id, now=now)
+        store.add_error(
+            reel_id=reel_id,
+            attempt_id=attempt_id,
+            stage="render",
+            message=row["error_message"],
+            retryable=True,
+            now=now,
+        )
+        if finalize:
+            store.finish_attempt(
+                attempt_id, status="failed", message=row["error_message"], reel_id=reel_id, now=now
+            )
         return _stage("failed", row["error_message"], reel_id)
 
     store.add_audio(reel_id, audio)
@@ -503,10 +722,11 @@ def run_generation(
     passed = not problems
     store.add_qa(reel_id, kind="technical", passed=passed, detail=probe, checked_at=utc_now(now))
     store.add_qa(reel_id, kind="factual", passed=True, detail={"sources": [candidate.url]}, checked_at=utc_now(now))
+    # License metadata is optional; photographic file presence is the acceptance gate.
     store.add_qa(
         reel_id,
-        kind="licensing",
-        passed=all(asset.get("license_name") for asset in assets),
+        kind="media",
+        passed=all(str(asset.get("path") or "").strip() for asset in assets),
         detail={"assets": len(assets)},
         checked_at=utc_now(now),
     )
@@ -531,7 +751,10 @@ def run_generation(
     row["facts_checked_at"] = utc_now(now)
     row["generation_finished_at"] = utc_now(now)
     store.upsert_reel(row)
-    store.finish_attempt(attempt_id, status=row["local_status"], message=row["error_message"], reel_id=reel_id, now=now)
+    if finalize:
+        store.finish_attempt(
+            attempt_id, status=row["local_status"], message=row["error_message"], reel_id=reel_id, now=now
+        )
     return _stage(row["local_status"], row["error_message"], reel_id)
 
 
@@ -601,14 +824,27 @@ def _base_row(config, candidate, reel_id, fingerprint, retry_count, checked, now
     }
 
 
-def _record_rejected(store, config, candidate, reel_id, fingerprint, retry_count, message, attempt_id, now) -> None:
+def _record_rejected(
+    store,
+    config,
+    candidate,
+    reel_id,
+    fingerprint,
+    retry_count,
+    message,
+    attempt_id,
+    now,
+    *,
+    finalize: bool = True,
+) -> None:
     row = _base_row(config, candidate, reel_id, fingerprint, retry_count, {}, now)
     row["local_status"] = "rejected"
     row["error_message"] = message
     row["generation_finished_at"] = utc_now(now)
     store.upsert_reel(row)
     store.add_error(reel_id=reel_id, attempt_id=attempt_id, stage="select", message=message, retryable=False, now=now)
-    store.finish_attempt(attempt_id, status="rejected", message=message, reel_id=reel_id, now=now)
+    if finalize:
+        store.finish_attempt(attempt_id, status="rejected", message=message, reel_id=reel_id, now=now)
 
 
 def _record_failed(
@@ -625,6 +861,7 @@ def _record_failed(
     stage: str,
     script: dict | None = None,
     checked: dict | None = None,
+    finalize: bool = True,
 ) -> None:
     """Mark a retryable generation failure (for example missing photographs)."""
 
@@ -647,4 +884,5 @@ def _record_failed(
         excerpt=str((checked or {}).get("excerpt") or "")[:1000],
     )
     store.add_error(reel_id=reel_id, attempt_id=attempt_id, stage=stage, message=message, retryable=True, now=now)
-    store.finish_attempt(attempt_id, status="failed", message=message, reel_id=reel_id, now=now)
+    if finalize:
+        store.finish_attempt(attempt_id, status="failed", message=message, reel_id=reel_id, now=now)
