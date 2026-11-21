@@ -65,6 +65,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional local image for a scene (repeatable, scene order)",
     )
     render.add_argument("--overwrite", action="store_true", help="Allow replacing an existing MP4")
+    pilot = sub.add_parser(
+        "run-persian-pilot",
+        help="Phase 6 end-to-end pilot: story → audio → Remotion → QA (no Cron/Instagram; offline with --audio)",
+    )
+    pilot.add_argument("--story-package", type=Path, required=True, help="Pilot story_package.json")
+    pilot.add_argument(
+        "--audio",
+        type=Path,
+        default=None,
+        help="Local narration MP3 fixture (skips ElevenLabs). Omit only for silent offline fallback.",
+    )
+    pilot.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Isolated pilot directory (default: storage/generated/pilot/<run-id>/)",
+    )
+    pilot.add_argument(
+        "--asset",
+        type=Path,
+        action="append",
+        default=[],
+        help="Optional local image for a scene (repeatable, scene order)",
+    )
+    pilot.add_argument(
+        "--database-path",
+        type=Path,
+        default=None,
+        help="Optional temporary Reel SQLite path (never the production DB unless you pass it)",
+    )
+    pilot.add_argument("--overwrite", action="store_true", help="Allow replacing artifacts in --out-dir")
+    pilot.add_argument(
+        "--skip-render",
+        action="store_true",
+        help="Stop after story + audio staging (no Remotion)",
+    )
     sub.add_parser("upload-outbox", help="Upload queued packages. Retains failures locally.")
     sub.add_parser("import-library", help="Record the Reels already rendered in this project")
     install = sub.add_parser("install-cron", help="Write the four Berlin generation cron lines")
@@ -85,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         "deliver-existing",
         "speak-narration",
         "render-reel",
+        "run-persian-pilot",
         "upload-outbox",
         "import-library",
         "install-cron",
@@ -119,6 +156,7 @@ def _reel_command(args: argparse.Namespace) -> int:
         install_cron_command,
         remove_cron_command,
         render_reel_command,
+        run_persian_pilot_command,
         speak_narration_command,
         status_command,
         upload_outbox_command,
@@ -152,6 +190,16 @@ def _reel_command(args: argparse.Namespace) -> int:
             out=args.out,
             asset=args.asset,
             overwrite=args.overwrite,
+        )
+    if args.command == "run-persian-pilot":
+        return run_persian_pilot_command(
+            story_package=args.story_package,
+            audio=args.audio,
+            out_dir=args.out_dir,
+            asset=args.asset,
+            database_path=args.database_path,
+            overwrite=args.overwrite,
+            skip_render=args.skip_render,
         )
     if args.command == "upload-outbox":
         return upload_outbox_command()
