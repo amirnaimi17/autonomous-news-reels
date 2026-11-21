@@ -82,13 +82,25 @@ def validate_reel_probe(probe: dict[str, Any], *, min_seconds: float = 1.0, max_
     if not probe.get("has_audio"):
         problems.append("audio missing")
     audio_codec = str(probe.get("audio_codec") or "").lower()
-    if probe.get("has_audio") and audio_codec not in {"aac", "mp3"}:
-        # Remotion h264 output should mux AAC; accept mp3 if a mux path differs.
+    # Documented Remotion H.264 output muxes AAC. Do not accept other codecs.
+    if probe.get("has_audio") and audio_codec != "aac":
         problems.append("audio codec")
     duration = float(probe.get("duration_seconds") or 0)
     if duration < min_seconds or duration > max_seconds:
         problems.append("duration")
     return problems
+
+
+def _asset_credit(asset: dict[str, Any] | None) -> str:
+    """Format author/license for a displayed photograph. Empty for graphics."""
+
+    if not isinstance(asset, dict):
+        return ""
+    author = str(asset.get("author") or "").strip()
+    license_name = str(asset.get("license_name") or "").strip()
+    if author and license_name:
+        return f"{author} / {license_name}"
+    return author or license_name
 
 
 def seconds_to_frames(seconds: float, *, fps: int = FPS) -> int:
@@ -169,18 +181,16 @@ def build_data_scenes(
     audio_duration_seconds: float | None = None,
     fps: int = FPS,
 ) -> list[dict[str, Any]]:
-    """Map a story_package (+ optional assets) onto DataReel scene props (relative paths unset)."""
+    """Map a story_package (+ optional assets) onto DataReel scene props (relative paths unset).
+
+    Assets stay index-aligned with scenes. A missing file becomes a graphic for
+    that scene only; later scene images are not shifted forward.
+    """
 
     raw_scenes = story.get("scenes") or []
     if not isinstance(raw_scenes, list) or not raw_scenes:
         raise RenderError("story package has no scenes")
-    asset_paths: list[str] = []
-    for asset in assets or []:
-        if not isinstance(asset, dict):
-            continue
-        path = str(asset.get("path") or "").strip()
-        if path and Path(path).is_file():
-            asset_paths.append(path)
+    asset_list = list(assets or [])
     weights: list[float] = []
     for scene in raw_scenes:
         if not isinstance(scene, dict):
@@ -196,10 +206,12 @@ def build_data_scenes(
         seconds = target * share
         headline = str(scene.get("on_screen_text") or scene.get("headline") or "").strip()
         caption = _short_caption(str(scene.get("narration") or headline))
-        asset_path = asset_paths[index] if index < len(asset_paths) else ""
-        credit = ""
-        if assets and index < len(assets) and isinstance(assets[index], dict):
-            credit = str(assets[index].get("author") or assets[index].get("license_name") or "")
+        asset = asset_list[index] if index < len(asset_list) and isinstance(asset_list[index], dict) else None
+        raw_path = str((asset or {}).get("path") or "").strip() if asset else ""
+        asset_path = raw_path if raw_path and Path(raw_path).is_file() else ""
+        graphic = not bool(asset_path)
+        # Attribution belongs only to a displayed photograph, never a shifted neighbor.
+        credit = "" if graphic else _asset_credit(asset)
         built.append(
             {
                 "durationFrames": seconds_to_frames(seconds, fps=fps),
@@ -207,7 +219,7 @@ def build_data_scenes(
                 "caption": caption or headline or f"صحنه {index + 1}",
                 "source_image": asset_path,
                 "credit": credit,
-                "graphic": not bool(asset_path),
+                "graphic": graphic,
                 "number": int(scene.get("number") or index + 1),
             }
         )

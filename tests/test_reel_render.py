@@ -28,12 +28,60 @@ def story() -> dict:
 
 def test_build_data_scenes_scales_to_audio_and_marks_graphics(story: dict, tmp_path: Path) -> None:
     photo = tmp_path / "photo.png"
-    # Minimal valid PNG via silent graphic helper path is heavy; touch a missing path -> graphic.
+    # Missing path for scene 1 only -> graphic for that scene.
     scenes = build_data_scenes(story, assets=[{"path": str(photo)}], audio_duration_seconds=8.0)
     assert len(scenes) == 4
     assert sum(scene["durationFrames"] for scene in scenes) == 240
     assert scenes[0]["graphic"] is True
+    assert scenes[0]["credit"] == ""
     assert "آزمون" in scenes[0]["headline"] or "رندر" in scenes[0]["headline"]
+
+
+def test_missing_image_does_not_shift_later_scene_assets(story: dict, tmp_path: Path) -> None:
+    """A hole in the asset list must not pull later photos into earlier scenes."""
+
+    from app.reels.render import make_graphic_png
+
+    first = tmp_path / "scene-01.png"
+    third = tmp_path / "scene-03.png"
+    make_graphic_png(first, color="0x112233")
+    make_graphic_png(third, color="0x334455")
+    assets = [
+        {"path": str(first), "author": "Alice", "license_name": "CC-BY-4.0"},
+        {"path": str(tmp_path / "missing-scene-02.jpg"), "author": "Bob", "license_name": "CC0"},
+        {"path": str(third), "author": "Carol", "license_name": "CC-BY-SA"},
+        {"path": "", "author": "Dan", "license_name": "unused"},
+    ]
+    scenes = build_data_scenes(story, assets=assets, audio_duration_seconds=8.0)
+    assert scenes[0]["graphic"] is False
+    assert scenes[0]["source_image"] == str(first)
+    assert scenes[0]["credit"] == "Alice / CC-BY-4.0"
+    assert scenes[1]["graphic"] is True
+    assert scenes[1]["source_image"] == ""
+    assert scenes[1]["credit"] == ""
+    assert scenes[2]["graphic"] is False
+    assert scenes[2]["source_image"] == str(third)
+    assert scenes[2]["credit"] == "Carol / CC-BY-SA"
+    assert scenes[3]["graphic"] is True
+    assert scenes[3]["credit"] == ""
+
+
+def test_mixed_image_and_graphic_scenes_keep_index_alignment(story: dict, tmp_path: Path) -> None:
+    from app.reels.render import make_graphic_png
+
+    photo = tmp_path / "only-scene-2.png"
+    make_graphic_png(photo, color="0x556677")
+    assets = [
+        {"path": "", "author": "skip"},
+        {"path": str(photo), "author": "Photographer", "license_name": "Pexels"},
+        {"path": str(tmp_path / "gone.png"), "author": "Ghost", "license_name": "CC0"},
+    ]
+    scenes = build_data_scenes(story, assets=assets, audio_duration_seconds=4.0)
+    assert [scene["graphic"] for scene in scenes] == [True, False, True, True]
+    assert scenes[1]["source_image"] == str(photo)
+    assert scenes[1]["credit"] == "Photographer / Pexels"
+    assert scenes[2]["source_image"] == ""
+    assert scenes[2]["credit"] == ""
 
 
 def test_stage_bundle_copies_audio_and_creates_graphic_plates(story: dict, tmp_path: Path, monkeypatch) -> None:
@@ -84,6 +132,8 @@ def test_validate_probe_accepts_vertical_h264() -> None:
     }
     assert validate_reel_probe(probe) == []
     assert "resolution" in validate_reel_probe({**probe, "width": 720})
+    assert "audio codec" in validate_reel_probe({**probe, "audio_codec": "mp3"})
+    assert "audio codec" in validate_reel_probe({**probe, "audio_codec": "opus"})
 
 
 def test_mocked_runner_writes_validated_mp4(story: dict, tmp_path: Path, monkeypatch) -> None:
