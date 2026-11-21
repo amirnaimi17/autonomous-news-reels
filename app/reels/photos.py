@@ -18,6 +18,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -179,7 +180,19 @@ def relevance_terms_from_queries(queries: list[str], *, extra: list[str] | None 
     if extra:
         terms.extend(_tokenize(" ".join(extra)))
     # Drop ultra-generic anchors that alone prove nothing.
-    generic = {"germany", "photograph", "photo", "image", "news", "scene"}
+    # Institutional search fallbacks are excluded by using only early queries for
+    # relevance; acceptance still requires scene-specific term overlap.
+    generic = {
+        "germany",
+        "german",
+        "deutschland",
+        "berlin",
+        "photograph",
+        "photo",
+        "image",
+        "news",
+        "scene",
+    }
     ordered = [term for term in dict.fromkeys(terms) if term.casefold() not in generic]
     return ordered[:16]
 
@@ -197,6 +210,51 @@ def candidate_is_relevant(candidate: PhotoCandidate, terms: list[str], *, min_hi
     if not terms:
         return False
     return candidate_relevance_score(candidate, terms) >= min_hits
+
+
+_RELAX_DROP = {
+    "close",
+    "close-up",
+    "taking",
+    "notes",
+    "person",
+    "people",
+    "with",
+    "from",
+    "into",
+    "over",
+    "under",
+    "about",
+    "after",
+    "before",
+    "simple",
+    "modern",
+    "beautiful",
+    "collage",
+}
+
+
+def relaxed_relevance_terms(strict_terms: Sequence[str], queries: Sequence[str]) -> list[str]:
+    """Broader scene terms for a second search pass. Never empty-on-purpose.
+
+    Drops modifier noise from the strict list, then keeps tokens from the most
+    specific (early) queries. Returns [] when no meaningful scene terms remain
+    so callers fail closed instead of accepting unrelated licensed photos.
+    """
+
+    strict = [str(term) for term in strict_terms if str(term).strip()]
+    narrowed = [term for term in strict if term.casefold() not in _RELAX_DROP]
+    primary_queries = list(queries[:3]) if queries else []
+    from_primary = relevance_terms_from_queries([str(item) for item in primary_queries])
+    from_primary = [term for term in from_primary if term.casefold() not in _RELAX_DROP]
+    ordered = list(dict.fromkeys([*narrowed, *from_primary]))
+    # Require at least one concrete term so "Germany"/"Berlin" alone cannot pass.
+    concrete = [
+        term
+        for term in ordered
+        if term.casefold() not in {"berlin", "germany", "german", "deutschland", "photograph", "photo"}
+    ]
+    return concrete[:12]
 
 
 def normalize_openverse_license(code: str | None, version: str | None = None) -> str:
@@ -553,13 +611,18 @@ def _iter_candidates(
     log: SearchLog | None = None,
     scene_number: int = 0,
 ):
-    terms = relevance_terms or []
+    terms = [str(term) for term in (relevance_terms or []) if str(term).strip()]
+    # Relevance is mandatory: empty term lists never accept a photograph.
+    if not terms:
+        if log is not None:
+            log.add(action="reject_empty_relevance", scene=scene_number)
+        return
     scored: list[tuple[PhotoCandidate, int]] = []
     for item in candidates:
         if item.download_url in used_urls or item.source_page in used_urls:
             continue
         score = candidate_relevance_score(item, terms)
-        if terms and score < 1:
+        if score < 1:
             if log is not None:
                 log.add(
                     action="reject_relevance",
@@ -601,24 +664,32 @@ def collect_scene_photos(
                 pools.extend(search_openverse(query, transport=transport, log=log))
             # Commons search is optional; 429s are logged and skipped.
             pools.extend(search_commons(query, transport=transport, log=log))
+        # Relevance uses the earliest (scene-specific) queries, not durable
+        # institutional fallbacks appended for search coverage.
+        default_terms = relevance_terms_from_queries(queries[:3] if len(queries) > 3 else queries)
         terms = (
             relevance_terms[scene_index]
             if relevance_terms is not None and scene_index < len(relevance_terms)
-            else relevance_terms_from_queries(queries)
+            else default_terms
         )
         chosen_asset: PhotoAsset | None = None
         last_error: Exception | None = None
-        # Prefer strict relevance; if that yields nothing downloadable, retry with a
-        # topic-only filter, then a licensed-any fallback from the same search pools.
-        topic_terms = [
-            term
-            for term in relevance_terms_from_queries(queries[-2:] if len(queries) >= 2 else queries)
-            if term.casefold() not in {"close", "close-up", "photo", "photograph"}
-        ] or terms[:4]
-        attempt_terms = [terms, topic_terms, []]
+        # Prefer strict relevance. One relaxed pass may drop modifier noise, but
+        # relevance stays mandatory: never accept a licensed-but-unrelated photo.
+        if not terms:
+            raise PhotoError(
+                f"no downloadable licensed photograph for scene {scene_index + 1}; "
+                f"relevance terms are empty; queries={queries}"
+            )
+        relaxed = relaxed_relevance_terms(terms, queries)
+        attempt_terms = [terms]
+        if relaxed and relaxed != terms:
+            attempt_terms.append(relaxed)
         for pass_index, active_terms in enumerate(attempt_terms):
             if chosen_asset is not None:
                 break
+            if not active_terms:
+                continue
             if pass_index:
                 log.add(
                     action="relax_relevance",
@@ -685,7 +756,7 @@ def collect_scene_photos(
                     path=chosen_asset.path,
                     source=chosen_asset.source_url,
                     license=chosen_asset.license_name,
-                    relevance=candidate_relevance_score(chosen, active_terms or terms),
+                    relevance=candidate_relevance_score(chosen, active_terms),
                     relaxed=pass_index > 0,
                 )
                 break
@@ -931,7 +1002,9 @@ def retrieve_licensed_photos_for_script(
     )
     if len(queries) != len(scenes):
         raise PhotoError(f"query count {len(queries)} does not match scene count {len(scenes)}")
-    relevance = [relevance_terms_from_queries(group) for group in queries]
+    relevance = [
+        relevance_terms_from_queries(group[:3] if len(group) > 3 else group) for group in queries
+    ]
     if any(not terms for terms in relevance):
         raise PhotoError("one or more scenes lack relevance terms for photograph selection")
     destination_dir = Path(destination_dir)

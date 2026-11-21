@@ -13,7 +13,12 @@ from app.reels.config import ReelConfig
 from app.reels.pipeline import Candidate, run_generation
 from app.reels.store import ReelStore
 from app.core.exceptions import GroundingError
-from app.services.llm.openai_script import STORY_PACKAGE_JSON_SCHEMA, chat_request, complete_chat
+from app.services.llm.openai_script import (
+    STORY_PACKAGE_JSON_SCHEMA,
+    chat_request,
+    complete_chat,
+    is_schema_compatibility_error,
+)
 from app.services.llm.persian_script import (
     build_editorial_brief,
     build_fact_pack,
@@ -347,6 +352,99 @@ def test_chat_request_shape_excludes_secrets() -> None:
     assert STORY_PACKAGE_JSON_SCHEMA["properties"]["scenes"]["type"] == "array"
     fallback = chat_request("return json", use_json_schema=False)
     assert fallback["body"]["response_format"] == {"type": "json_object"}
+
+
+def test_schema_compatibility_error_detection() -> None:
+    assert is_schema_compatibility_error(
+        400,
+        '{"error":{"message":"Invalid schema for response_format json_schema"}}',
+    )
+    assert is_schema_compatibility_error(
+        400,
+        "response_format type json_schema is not supported with this model",
+    )
+    assert not is_schema_compatibility_error(400, '{"error":{"message":"Invalid API key"}}')
+    assert not is_schema_compatibility_error(400, "rate limit exceeded for requests")
+    assert not is_schema_compatibility_error(500, "response_format json_schema boom")
+    assert not is_schema_compatibility_error(404, "model not found")
+
+
+def test_complete_chat_downgrades_only_on_schema_compat_errors() -> None:
+    calls: list[dict] = []
+
+    def transport_unrelated(spec: dict, api_key: str) -> bytes:
+        calls.append(spec)
+        import urllib.error
+
+        raise urllib.error.HTTPError(
+            spec["url"],
+            400,
+            "Bad Request",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=__import__("io").BytesIO(b'{"error":{"message":"Invalid API key provided"}}'),
+        )
+
+    with pytest.raises(GroundingError, match="HTTP 400"):
+        complete_chat("return json", api_key="unit-test-key", transport=transport_unrelated)
+    assert len(calls) == 1
+    assert calls[0]["body"]["response_format"]["type"] == "json_schema"
+
+    calls.clear()
+
+    def transport_schema_then_ok(spec: dict, api_key: str) -> bytes:
+        calls.append(spec)
+        fmt = spec["body"]["response_format"]
+        if fmt.get("type") == "json_schema":
+            import urllib.error
+
+            raise urllib.error.HTTPError(
+                spec["url"],
+                400,
+                "Bad Request",
+                hdrs=None,  # type: ignore[arg-type]
+                fp=__import__("io").BytesIO(
+                    b'{"error":{"message":"Invalid schema for response_format \'json_schema\'"}}'
+                ),
+            )
+        body = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "schema_version": "pilot-1",
+                                "event_id": "x",
+                                "language": "fa-IR",
+                                "audience": "test",
+                                "headline": "عنوان",
+                                "source_urls": ["https://example.com/x"],
+                                "claims": [{"text": "x", "source_urls": ["https://example.com/x"]}],
+                                "duration_seconds": 8,
+                                "duration_policy": "",
+                                "scenes": [
+                                    {
+                                        "number": 1,
+                                        "duration_seconds": 8,
+                                        "narration": "متن",
+                                        "on_screen_text": "متن",
+                                        "visual_prompt": "Berlin ministry exterior photograph",
+                                    }
+                                ]
+                                * 3,
+                                "disclaimers": [],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+        return json.dumps(body).encode("utf-8")
+
+    result = complete_chat("return json", api_key="unit-test-key", transport=transport_schema_then_ok)
+    assert result["event_id"] == "x"
+    assert len(calls) == 2
+    assert calls[0]["body"]["response_format"]["type"] == "json_schema"
+    assert calls[1]["body"]["response_format"]["type"] == "json_object"
 
 
 def test_structure_errors_missing_scenes() -> None:

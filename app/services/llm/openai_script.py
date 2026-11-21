@@ -113,6 +113,37 @@ _DEFAULT_SCRIPT_SYSTEM = (
     "not generic graphic or typography placeholders."
 )
 
+# Only these response-body markers justify falling back from json_schema to json_object.
+_SCHEMA_COMPAT_MARKERS = (
+    "response_format",
+    "json_schema",
+    "json schema",
+    "structured outputs",
+    "structured output",
+    "invalid_schema",
+    "invalid schema",
+    "unknown parameter",
+    "not supported with",
+    "does not support",
+    "unsupported parameter",
+)
+
+
+def is_schema_compatibility_error(status: int, detail: str) -> bool:
+    """Return True only for confirmed structured-output / schema rejections."""
+
+    if status not in {400, 404}:
+        return False
+    text = (detail or "").casefold()
+    if not text:
+        return False
+    has_format_signal = any(
+        marker in text
+        for marker in ("response_format", "json_schema", "json schema", "structured output")
+    )
+    has_compat_signal = any(marker in text for marker in _SCHEMA_COMPAT_MARKERS)
+    return has_format_signal and has_compat_signal
+
 
 def chat_request(
     prompt: str,
@@ -211,8 +242,9 @@ def complete_chat(
         raw = sender(spec, key)
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
-        # Some accounts/models reject json_schema; retry once with json_object.
-        if using_schema and error.code in {400, 404}:
+        # Downgrade only when the API explicitly rejects structured-output schema.
+        # Unrelated 400/404 (auth, quota, bad request) must not silently fall back.
+        if using_schema and is_schema_compatibility_error(error.code, detail):
             return complete_chat(
                 prompt,
                 model=chosen_model,
