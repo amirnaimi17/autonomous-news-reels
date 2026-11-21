@@ -603,10 +603,26 @@ def test_rank_news_cli_prints_top_three_without_media(tmp_path: Path, monkeypatc
 def test_load_reel_config_min_score_override(monkeypatch, tmp_path: Path) -> None:
     from app.reels.config import load_reel_config
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("REEL_WORKING_DIRECTORY", str(tmp_path))
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=sk-test-from-dotenv\n"
+        "REEL_EDITORIAL_RANK_PROVIDER=openai\n"
+        "REEL_EDITORIAL_RANK_APPROVED=true\n"
+        "REEL_EDITORIAL_AUDIENCE_ID=iranians_in_germany\n",
+        encoding="utf-8",
+    )
     monkeypatch.delenv("REEL_EDITORIAL_MIN_SCORE", raising=False)
+    monkeypatch.delenv("REEL_EDITORIAL_RANK_APPROVED", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
     config = load_reel_config()
     assert config.editorial_min_score is None
+    assert config.editorial_rank_approved is True
+    assert config.editorial_rank_provider == "openai"
+    import os
+
+    assert os.environ.get("OPENAI_API_KEY") == "sk-test-from-dotenv"
 
     monkeypatch.setenv("REEL_EDITORIAL_MIN_SCORE", "0.41")
     config = load_reel_config()

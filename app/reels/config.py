@@ -30,6 +30,22 @@ def _optional_float(raw: str | None) -> float | None:
     return float(text)
 
 
+def _load_dotenv() -> None:
+    """Load project ``.env`` into ``os.environ`` without overriding exported vars."""
+
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        return
+    # Prefer the working-directory .env when set, else CWD (CLI from repo root).
+    root = Path(os.getenv("REEL_WORKING_DIRECTORY", Path.cwd()))
+    candidate = root / ".env"
+    if candidate.is_file():
+        load_dotenv(candidate, override=False)
+    else:
+        load_dotenv(override=False)
+
+
 def _hours(value: str) -> tuple[int, ...]:
     hours: list[int] = []
     for part in value.split(","):
@@ -89,6 +105,7 @@ class ReelConfig:
 def load_reel_config() -> ReelConfig:
     """Build the Reel config. Paid generation and the ingest token default off."""
 
+    _load_dotenv()
     root = Path(os.getenv("REEL_WORKING_DIRECTORY", Path.cwd()))
     hours = _hours(os.getenv("REEL_GENERATION_HOURS", "7,11,15,19"))
     script_provider = os.getenv("REEL_SCRIPT_PROVIDER", "off").strip().lower() or "off"
