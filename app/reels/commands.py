@@ -14,7 +14,7 @@ from pathlib import Path
 from app.core.config import NewsSourceConfig
 from app.reels.config import ReelConfig, load_reel_config
 from app.reels.cron import RunLock, cron_block, install_cron_text, remove_cron_text
-from app.reels.package import file_sha256, write_package
+from app.reels.package import write_package
 from app.reels.pipeline import Candidate, run_generation
 from app.reels.store import ReelStore, utc_now
 from app.reels.upload import UploadTransport, upload_package
@@ -493,64 +493,81 @@ def speak_narration_command(
 
 
 def render_with_remotion(script: dict, assets: list[dict], audio: dict) -> dict:
-    """Render through the data-driven Remotion composition."""
+    """Render through the data-driven Remotion DataReel composition."""
 
-    del assets
-    root = Path(__file__).resolve().parents[2]
-    project = root / ".cursor" / "skills" / "reel-video-design" / "remotion-poc"
-    props = {
-        "scenes": json.loads(script.get("storyboard_json") or "[]"),
-        "audio": audio.get("path", ""),
+    from app.reels.render import DEFAULT_OUT_DIR, render_data_reel, story_from_script
+
+    story = story_from_script(script)
+    audio_path = Path(audio.get("path") or "")
+    reel_id = str(script.get("reel_id") or story.get("event_id") or "reel")
+    out = DEFAULT_OUT_DIR / f"{reel_id}.mp4"
+    result = render_data_reel(
+        story,
+        audio_path,
+        out_path=out,
+        assets=assets,
+        overwrite=False,
+        render_id=reel_id,
+    )
+    if result.get("problems"):
+        raise RuntimeError("rendered video failed validation: " + "; ".join(result["problems"]))
+    return {"path": result["path"], "probe": result.get("probe"), "render_id": result.get("render_id")}
+
+
+def render_reel_command(
+    *,
+    story_package: Path,
+    audio: Path,
+    out: Path | None = None,
+    asset: list[Path] | None = None,
+    overwrite: bool = False,
+) -> int:
+    """Isolated Remotion render. Does not call OpenAI or ElevenLabs."""
+
+    from app.reels.render import DEFAULT_OUT_DIR, RenderError, render_data_reel
+
+    path = Path(story_package)
+    if not path.is_file():
+        print(f"story package missing: {path}", flush=True)
+        return 1
+    audio_path = Path(audio)
+    if not audio_path.is_file():
+        print(f"audio missing: {audio_path}", flush=True)
+        return 1
+    try:
+        story = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"cannot load story package: {exc}", flush=True)
+        return 1
+    assets = [{"path": str(item), "license_name": "local-test", "author": ""} for item in (asset or []) if item.is_file()]
+    event_id = str(story.get("event_id") or "render")
+    destination = Path(out) if out else DEFAULT_OUT_DIR / f"{event_id}.mp4"
+    try:
+        result = render_data_reel(
+            story,
+            audio_path,
+            out_path=destination,
+            assets=assets,
+            overwrite=overwrite,
+        )
+    except RenderError as exc:
+        print(f"render failed: {exc}", flush=True)
+        return 1
+    payload = {
+        "ok": result["ok"],
+        "path": result["path"],
+        "problems": result["problems"],
+        "probe": result["probe"],
+        "render_id": result["render_id"],
     }
-    out = root / "storage" / "generated" / "reels" / f"{script.get('reel_id', 'reel')}.mp4"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    node = root / ".cursor" / "skills" / "reel-video-design" / ".tools" / "node-v22.21.1-linux-x64" / "bin"
-    command = [
-        "npx",
-        "remotion",
-        "render",
-        "src/index.tsx",
-        "DataReel",
-        str(out),
-        "--codec",
-        "h264",
-        "--props",
-        json.dumps(props),
-    ]
-    subprocess.run(command, cwd=project, check=True, env={**dict(**__import__("os").environ), "PATH": f"{node}:{__import__('os').environ.get('PATH', '')}"})
-    return {"path": str(out)}
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if result["ok"] else 1
 
 
 def probe_mp4(path: Path) -> dict:
-    completed = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration:stream=codec_type,codec_name,width,height,duration",
-            "-of",
-            "json",
-            str(path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(completed.stdout)
-    video = next(stream for stream in payload.get("streams", []) if stream.get("codec_type") == "video")
-    audio_streams = [stream for stream in payload.get("streams", []) if stream.get("codec_type") == "audio"]
-    audio = audio_streams[0] if audio_streams else {}
-    return {
-        "width": video.get("width"),
-        "height": video.get("height"),
-        "video_codec": video.get("codec_name"),
-        "audio_codec": audio.get("codec_name"),
-        "has_audio": bool(audio),
-        "duration_seconds": float(payload.get("format", {}).get("duration") or video.get("duration") or 0),
-        "audio_duration_seconds": float(audio.get("duration") or payload.get("format", {}).get("duration") or 0),
-        "checksum_sha256": file_sha256(Path(path)),
-    }
+    from app.reels.render import probe_media
+
+    return probe_media(Path(path))
 
 
 def _with_target(config: ReelConfig, target: str) -> ReelConfig:
