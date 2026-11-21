@@ -163,12 +163,15 @@ def test_django_crontab_uses_the_four_berlin_hours() -> None:
     assert CRONJOBS == [("0 7,11,15,19 * * *", "library.cron.generate_scheduled_reel")]
 
 
-def test_cron_block_has_four_berlin_hours_and_a_lock(tmp_path) -> None:
+def test_cron_block_uses_the_python_lock_without_external_flock(tmp_path) -> None:
     config = _config(tmp_path)
     block = cron_block(config)
     assert "CRON_TZ=Europe/Berlin" in block
     assert "0 7,11,15,19 * * *" in block
-    assert "flock -n" in block
+    # generate_reel_command acquires RunLock itself. An outer flock on the
+    # same file would prevent the Python command from acquiring that lock.
+    assert "flock -n" not in block
+    assert f"cd {tmp_path.resolve()} && /usr/bin/python3 -m app.cli generate-reel" in block
     assert "generate-reel --target almanyar --scheduled" in block
     installed = install_cron_text("0 9 * * * echo keep\n", config)
     assert "echo keep" in installed
