@@ -47,6 +47,8 @@ class PhotoCandidate:
     height: int | None = None
     provider: str = ""
     attribution: str = ""
+    tags: list[str] = field(default_factory=list)
+    description: str = ""
 
 
 @dataclass
@@ -87,6 +89,114 @@ def load_reuse_decision():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.reuse_decision
+
+
+_MISSING_AUTHORS = {"", "unknown", "n/a", "na", "none", "null", "anonymous", "anon"}
+_GRAPHIC_PROMPT_HINTS = (
+    "graphic",
+    "typography",
+    "type card",
+    "title card",
+    "opener",
+    "closing",
+    "amount card",
+    "calendar graphic",
+    "text only",
+    "no faces",
+    "solid color",
+)
+
+
+def looks_like_graphic_prompt(visual: str) -> bool:
+    folded = (visual or "").casefold()
+    return any(hint in folded for hint in _GRAPHIC_PROMPT_HINTS)
+
+
+def _openverse_tags(item: dict[str, Any]) -> list[str]:
+    raw = item.get("tags") or []
+    tags: list[str] = []
+    if isinstance(raw, list):
+        for entry in raw:
+            if isinstance(entry, dict):
+                name = str(entry.get("name") or entry.get("display_name") or "").strip()
+            else:
+                name = str(entry).strip()
+            if name:
+                tags.append(name)
+    elif isinstance(raw, str) and raw.strip():
+        tags.extend(part.strip() for part in raw.split(",") if part.strip())
+    return tags[:24]
+
+
+def license_evidence_problems(
+    *,
+    license_name: str,
+    license_url: str,
+    source_url: str,
+    author: str,
+    restrictions: str | None = None,
+) -> list[str]:
+    """Reject incomplete or non-reusable licensing evidence. Never assume reuse is allowed."""
+
+    problems: list[str] = []
+    name = (license_name or "").strip()
+    url = (license_url or "").strip()
+    source = (source_url or "").strip()
+    creator = (author or "").strip()
+    if not name:
+        problems.append("missing license_name")
+    if not source:
+        problems.append("missing original source_url")
+    if creator.casefold() in _MISSING_AUTHORS:
+        problems.append("missing photographer/author")
+    if not url:
+        problems.append("missing license_url")
+    elif not (url.startswith("http://") or url.startswith("https://")):
+        problems.append("license_url is not an http(s) link")
+    if name:
+        decision = load_reuse_decision()(name, restrictions or None)
+        if not decision.get("accepted"):
+            problems.append(str(decision.get("reason") or "license not accepted for reuse"))
+    return problems
+
+
+def candidate_metadata_blob(candidate: PhotoCandidate) -> str:
+    parts = [
+        candidate.title,
+        candidate.description,
+        candidate.attribution,
+        " ".join(candidate.tags),
+        candidate.author,
+        candidate.provider,
+    ]
+    return " ".join(part for part in parts if part).casefold()
+
+
+def relevance_terms_from_queries(queries: list[str], *, extra: list[str] | None = None) -> list[str]:
+    terms: list[str] = []
+    for query in queries:
+        terms.extend(_tokenize(query))
+    if extra:
+        terms.extend(_tokenize(" ".join(extra)))
+    # Drop ultra-generic anchors that alone prove nothing.
+    generic = {"germany", "photograph", "photo", "image", "news", "scene"}
+    ordered = [term for term in dict.fromkeys(terms) if term.casefold() not in generic]
+    return ordered[:16]
+
+
+def candidate_relevance_score(candidate: PhotoCandidate, terms: list[str]) -> int:
+    """Count meaningful metadata overlaps with the scene search terms."""
+
+    if not terms:
+        return 0
+    blob = candidate_metadata_blob(candidate)
+    return sum(1 for term in terms if term.casefold() in blob)
+
+
+def candidate_is_relevant(candidate: PhotoCandidate, terms: list[str], *, min_hits: int = 1) -> bool:
+    if not terms:
+        return False
+    return candidate_relevance_score(candidate, terms) >= min_hits
 
 
 def normalize_openverse_license(code: str | None, version: str | None = None) -> str:
@@ -169,33 +279,47 @@ def search_openverse(
     }
     url = OPENVERSE_API + "?" + urllib.parse.urlencode(params)
     payload = http_get_json(url, transport=transport, log=log)
-    reuse = load_reuse_decision()
     found: list[PhotoCandidate] = []
     for item in payload.get("results") or []:
         if not isinstance(item, dict):
             continue
         license_name = normalize_openverse_license(item.get("license"), item.get("license_version"))
-        decision = reuse(license_name)
-        if not decision.get("accepted"):
-            if log is not None:
-                log.add(action="reject_license", query=query, title=item.get("title"), license=license_name, reason=decision.get("reason"))
-            continue
         download = str(item.get("url") or "").strip()
         source = str(item.get("foreign_landing_url") or item.get("detail_url") or "").strip()
-        if not download or not source:
+        author = str(item.get("creator") or "").strip()
+        license_url = str(item.get("license_url") or "").strip()
+        evidence = license_evidence_problems(
+            license_name=license_name,
+            license_url=license_url,
+            source_url=source,
+            author=author,
+        )
+        if evidence:
+            if log is not None:
+                log.add(
+                    action="reject_license",
+                    query=query,
+                    title=item.get("title"),
+                    license=license_name,
+                    reason="; ".join(evidence),
+                )
+            continue
+        if not download:
             continue
         found.append(
             PhotoCandidate(
                 title=str(item.get("title") or ""),
                 download_url=download,
                 source_page=source,
-                author=str(item.get("creator") or "unknown"),
+                author=author,
                 license_name=license_name,
-                license_url=str(item.get("license_url") or ""),
+                license_url=license_url,
                 width=int(item["width"]) if item.get("width") else None,
                 height=int(item["height"]) if item.get("height") else None,
                 provider=str(item.get("provider") or item.get("source") or "openverse"),
                 attribution=str(item.get("attribution") or ""),
+                tags=_openverse_tags(item),
+                description=str(item.get("description") or ""),
             )
         )
     if log is not None:
@@ -231,7 +355,6 @@ def search_commons(
         if log is not None:
             log.add(action="search_commons_failed", query=query, error=str(exc))
         return []
-    reuse = load_reuse_decision()
     pages = (payload.get("query") or {}).get("pages") or {}
     found: list[PhotoCandidate] = []
     for page in pages.values():
@@ -242,16 +365,31 @@ def search_commons(
         meta = info.get("extmetadata") or {}
         license_name = str((meta.get("LicenseShortName") or {}).get("value") or "")
         restrictions = str((meta.get("Restrictions") or {}).get("value") or "")
-        decision = reuse(license_name, restrictions or None)
-        if not decision.get("accepted"):
-            if log is not None:
-                log.add(action="reject_license", query=query, title=page.get("title"), license=license_name, reason=decision.get("reason"))
-            continue
         artist_html = str((meta.get("Artist") or {}).get("value") or "")
-        author = re.sub(r"<[^>]+>", "", artist_html).strip() or "unknown"
+        author = re.sub(r"<[^>]+>", "", artist_html).strip()
         license_url = str((meta.get("LicenseUrl") or {}).get("value") or "")
         download = str(info.get("thumburl") or info.get("url") or "").strip()
         source = "https://commons.wikimedia.org/wiki/" + urllib.parse.quote(str(page.get("title") or "").replace(" ", "_"))
+        description = re.sub(r"<[^>]+>", "", str((meta.get("ImageDescription") or {}).get("value") or "")).strip()
+        categories = str((meta.get("Categories") or {}).get("value") or "")
+        tags = [part.strip() for part in categories.split("|") if part.strip()][:24]
+        evidence = license_evidence_problems(
+            license_name=license_name,
+            license_url=license_url,
+            source_url=source,
+            author=author,
+            restrictions=restrictions or None,
+        )
+        if evidence:
+            if log is not None:
+                log.add(
+                    action="reject_license",
+                    query=query,
+                    title=page.get("title"),
+                    license=license_name,
+                    reason="; ".join(evidence),
+                )
+            continue
         if not download:
             continue
         found.append(
@@ -266,6 +404,8 @@ def search_commons(
                 height=int(info["thumbheight"]) if info.get("thumbheight") else info.get("height"),
                 provider="wikimedia_commons",
                 attribution=f"{author} / {license_name}",
+                tags=tags,
+                description=description,
             )
         )
     if log is not None:
@@ -355,7 +495,10 @@ def require_photographic_assets(assets: list[dict[str, Any]], *, expected_scenes
     """Return problems if any scene lacks a usable local photograph + license metadata."""
 
     problems: list[str] = []
-    if len(assets) < expected_scenes:
+    if expected_scenes < 1:
+        problems.append("expected_scenes must be >= 1")
+        return problems
+    if len(assets) != expected_scenes:
         problems.append(f"expected {expected_scenes} photographic assets, got {len(assets)}")
     for index in range(expected_scenes):
         asset = assets[index] if index < len(assets) else {}
@@ -367,37 +510,64 @@ def require_photographic_assets(assets: list[dict[str, Any]], *, expected_scenes
             validate_image_file(path)
         except PhotoError as exc:
             problems.append(f"scene {index + 1}: {exc}")
-        if not str(asset.get("license_name") or "").strip():
-            problems.append(f"scene {index + 1}: missing license_name")
-        if not str(asset.get("source_url") or "").strip():
-            problems.append(f"scene {index + 1}: missing source_url")
-        if not str(asset.get("author") or "").strip():
-            problems.append(f"scene {index + 1}: missing author")
+        evidence = license_evidence_problems(
+            license_name=str(asset.get("license_name") or ""),
+            license_url=str(asset.get("license_url") or ""),
+            source_url=str(asset.get("source_url") or ""),
+            author=str(asset.get("author") or ""),
+        )
+        for item in evidence:
+            problems.append(f"scene {index + 1}: {item}")
         license_name = str(asset.get("license_name") or "").strip().casefold()
         if license_name in {"original-graphic", "remotion-graphic", "silent-fixture"}:
             problems.append(f"scene {index + 1}: graphic placeholder is not a photograph")
     return problems
 
 
-def _candidate_priority(item: PhotoCandidate) -> tuple[int, int]:
-    """Prefer non-Wikimedia hotlink hosts when Commons is rate-limited."""
+def _candidate_priority(item: PhotoCandidate, *, relevance: int = 0) -> tuple[int, int, int]:
+    """Prefer relevant metadata matches, then reliable download hosts, then resolution."""
 
     host = urllib.parse.urlparse(item.download_url).netloc.casefold()
     if "staticflickr.com" in host or "live.staticflickr.com" in host:
-        return (0, -(item.width or 0))
-    if "images.unsplash.com" in host or "images.pexels.com" in host:
-        return (1, -(item.width or 0))
-    if "upload.wikimedia.org" in host:
-        return (5, -(item.width or 0))
-    return (3, -(item.width or 0))
+        host_rank = 0
+    elif "images.unsplash.com" in host or "images.pexels.com" in host:
+        host_rank = 1
+    elif "upload.wikimedia.org" in host:
+        host_rank = 5
+    else:
+        host_rank = 3
+    return (-relevance, host_rank, -(item.width or 0))
 
 
-def _iter_candidates(candidates: list[PhotoCandidate], *, used_urls: set[str]):
-    ordered = sorted(
-        (item for item in candidates if item.download_url not in used_urls and item.source_page not in used_urls),
-        key=_candidate_priority,
-    )
-    yield from ordered
+def _iter_candidates(
+    candidates: list[PhotoCandidate],
+    *,
+    used_urls: set[str],
+    relevance_terms: list[str] | None = None,
+    log: SearchLog | None = None,
+    scene_number: int = 0,
+):
+    terms = relevance_terms or []
+    scored: list[tuple[PhotoCandidate, int]] = []
+    for item in candidates:
+        if item.download_url in used_urls or item.source_page in used_urls:
+            continue
+        score = candidate_relevance_score(item, terms)
+        if terms and score < 1:
+            if log is not None:
+                log.add(
+                    action="reject_relevance",
+                    scene=scene_number,
+                    title=item.title,
+                    source=item.source_page,
+                    terms=terms[:8],
+                    score=score,
+                )
+            continue
+        scored.append((item, score))
+    ordered = sorted(scored, key=lambda pair: _candidate_priority(pair[0], relevance=pair[1]))
+    for item, _score in ordered:
+        yield item
 
 
 def collect_scene_photos(
@@ -406,23 +576,39 @@ def collect_scene_photos(
     *,
     transport: Transport | None = None,
     prefer_openverse: bool = True,
+    relevance_terms: list[list[str]] | None = None,
 ) -> tuple[list[PhotoAsset], SearchLog]:
     """Search and download one licensed photograph per scene query list."""
 
+    if not scene_queries:
+        raise PhotoError("scene_queries is empty; storyboard must define scenes")
     log = SearchLog()
     destination_dir.mkdir(parents=True, exist_ok=True)
     assets: list[PhotoAsset] = []
     used: set[str] = set()
     for scene_index, queries in enumerate(scene_queries):
+        if not queries:
+            raise PhotoError(f"scene {scene_index + 1} has no photo search queries")
         pools: list[PhotoCandidate] = []
         for query in queries:
             if prefer_openverse:
                 pools.extend(search_openverse(query, transport=transport, log=log))
             # Commons search is optional; 429s are logged and skipped.
             pools.extend(search_commons(query, transport=transport, log=log))
+        terms = (
+            relevance_terms[scene_index]
+            if relevance_terms is not None and scene_index < len(relevance_terms)
+            else relevance_terms_from_queries(queries)
+        )
         chosen_asset: PhotoAsset | None = None
         last_error: Exception | None = None
-        for chosen in _iter_candidates(pools, used_urls=used):
+        for chosen in _iter_candidates(
+            pools,
+            used_urls=used,
+            relevance_terms=terms,
+            log=log,
+            scene_number=scene_index + 1,
+        ):
             ext = ".jpg"
             lower = chosen.download_url.casefold()
             if ".png" in lower:
@@ -431,6 +617,14 @@ def collect_scene_photos(
                 ext = ".webp"
             path = destination_dir / f"scene-{scene_index + 1:02d}{ext}"
             try:
+                evidence = license_evidence_problems(
+                    license_name=chosen.license_name,
+                    license_url=chosen.license_url,
+                    source_url=chosen.source_page,
+                    author=chosen.author,
+                )
+                if evidence:
+                    raise PhotoError("; ".join(evidence))
                 download_image(chosen.download_url, path, transport=transport, log=log, retries=3)
                 meta = validate_image_file(path)
             except PhotoError as exc:
@@ -462,6 +656,7 @@ def collect_scene_photos(
                 path=chosen_asset.path,
                 source=chosen_asset.source_url,
                 license=chosen_asset.license_name,
+                relevance=candidate_relevance_score(chosen, terms),
             )
             break
         if chosen_asset is None:
@@ -518,30 +713,6 @@ def assets_for_render(photos: list[PhotoAsset]) -> list[dict[str, Any]]:
         }
         for photo in photos
     ]
-
-
-FRUEHSTART_SCENE_QUERIES: list[list[str]] = [
-    [
-        "Bundesrat Berlin building",
-        "Bundesrat Berlin Preußenhaus exterior",
-        "Herrenhaus Berlin Bundesrat",
-    ],
-    [
-        "euro coins close up",
-        "euro coins on table",
-        "euro change purse",
-    ],
-    [
-        "pink piggy bank coins",
-        "piggy bank money savings",
-        "ceramic piggy bank",
-    ],
-    [
-        "retirement calculator paperwork",
-        "financial planning documents desk",
-        "pension folder documents",
-    ],
-]
 
 
 _STOPWORDS = {
@@ -627,9 +798,14 @@ def build_scene_photo_queries(
     *,
     fact_pack: dict[str, Any] | None = None,
 ) -> list[list[str]]:
-    """Build Openverse/Commons query lists dynamically for every storyboard scene."""
+    """Build Openverse/Commons query lists dynamically for every storyboard scene.
+
+    Raises ``PhotoError`` when the storyboard is missing or has no scenes.
+    """
 
     scenes = _scene_list_from_script(script)
+    if not scenes:
+        raise PhotoError("storyboard is missing or invalid; cannot build photo queries")
     title_tokens = _tokenize(candidate_title)[:6]
     summary_tokens = _tokenize(candidate_summary)[:8]
     fact_tokens: list[str] = []
@@ -640,29 +816,24 @@ def build_scene_photo_queries(
             if isinstance(item, dict):
                 fact_tokens.extend(_tokenize(str(item.get("text") or ""))[:4])
         fact_tokens = list(dict.fromkeys(fact_tokens))[:10]
-    topic = " ".join(title_tokens[:4]) or "Germany news"
+    topic = " ".join(title_tokens[:4]).strip()
+    if not topic:
+        raise PhotoError("cannot derive topic tokens from the story title")
     germany = "Germany"
-    if not scenes:
-        # Still require photographs even when the storyboard is empty: four topic plates.
-        return [
-            [f"{topic} building {germany}", f"{topic} government {germany}", f"{topic} news {germany}"],
-            [f"{topic} money euro", f"{topic} coins", "euro coins savings"],
-            [f"{topic} family savings", f"{topic} household", "piggy bank savings"],
-            [f"{topic} documents", f"{topic} planning", "financial documents desk"],
-        ]
 
     queries: list[list[str]] = []
     for index, scene in enumerate(scenes):
         visual = str(scene.get("visual_prompt") or "").strip()
-        on_screen = str(scene.get("on_screen_text") or "").strip()
-        narration = str(scene.get("narration") or "").strip()
         visual_tokens = _tokenize(visual)[:6]
-        # Prefer English visual prompts for Openverse; fall back to topic tokens.
-        primary = visual if re.search(r"[A-Za-z]{3,}", visual) else ""
-        secondary_bits = visual_tokens or title_tokens[:3] or summary_tokens[:3]
-        secondary = " ".join(secondary_bits)
+        graphic_like = looks_like_graphic_prompt(visual)
+        # Prefer concrete English visual prompts; skip graphic/typography instructions.
+        primary = ""
+        if visual and re.search(r"[A-Za-z]{3,}", visual) and not graphic_like:
+            primary = visual
+        topic_bits = title_tokens[:3] or summary_tokens[:3] or fact_tokens[:3]
+        secondary = " ".join(visual_tokens if (visual_tokens and not graphic_like) else topic_bits)
         tertiary = " ".join((title_tokens[:2] + fact_tokens[:2] + summary_tokens[:2])[:5])
-        scene_queries = []
+        scene_queries: list[str] = []
         if primary:
             scene_queries.append(primary)
             scene_queries.append(f"{primary} {germany}")
@@ -670,13 +841,12 @@ def build_scene_photo_queries(
             scene_queries.append(f"{secondary} {germany}".strip())
         if tertiary:
             scene_queries.append(f"{tertiary} photograph")
-        # Keep Persian on-screen text out of search strings; use topic anchors instead.
-        if not scene_queries:
-            scene_queries = [f"{topic} scene {index + 1}", f"{topic} {germany}"]
-        # Deduplicate while preserving order.
+        # Always keep a topic-anchored fallback tied to this story, never a fixed plate set.
+        scene_queries.append(f"{topic} {germany}")
         ordered = list(dict.fromkeys(item for item in scene_queries if item.strip()))
+        if not ordered:
+            raise PhotoError(f"scene {index + 1} produced no photo search queries")
         queries.append(ordered[:4])
-        del on_screen, narration  # reserved for future relevance scoring
     return queries
 
 
@@ -695,27 +865,43 @@ def retrieve_licensed_photos_for_script(
     Never returns Remotion graphic placeholders.
     """
 
+    scenes = _scene_list_from_script(script)
+    if not scenes:
+        raise PhotoError("storyboard is missing or invalid; refusing photo retrieval")
     queries = build_scene_photo_queries(
         candidate_title,
         candidate_summary,
         script,
         fact_pack=script.get("fact_pack") if isinstance(script.get("fact_pack"), dict) else None,
     )
-    if not queries:
-        raise PhotoError("no scene photo queries could be built")
+    if len(queries) != len(scenes):
+        raise PhotoError(f"query count {len(queries)} does not match scene count {len(scenes)}")
+    relevance = [relevance_terms_from_queries(group) for group in queries]
+    if any(not terms for terms in relevance):
+        raise PhotoError("one or more scenes lack relevance terms for photograph selection")
     destination_dir = Path(destination_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
-    photos, log = collect_scene_photos(queries, destination_dir, transport=transport)
+    photos, log = collect_scene_photos(
+        queries,
+        destination_dir,
+        transport=transport,
+        relevance_terms=relevance,
+    )
     log.write(destination_dir / "image_search_log.json")
     (destination_dir / "photo_queries.json").write_text(
-        json.dumps({"queries": queries, "title": candidate_title}, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(
+            {"queries": queries, "relevance_terms": relevance, "title": candidate_title, "scenes": len(scenes)},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     write_attribution_manifest(photos, destination_dir / "attribution_manifest.json", reel_id=reel_id or destination_dir.name)
     assets = assets_for_render(photos)
-    problems = require_photographic_assets(assets, expected_scenes=len(queries))
+    problems = require_photographic_assets(assets, expected_scenes=len(scenes))
     if problems:
         raise PhotoError("photographic acceptance gate failed: " + "; ".join(problems))
-    if len(assets) != len(queries):
-        raise PhotoError(f"expected {len(queries)} photographs, got {len(assets)}")
+    if len(assets) != len(scenes):
+        raise PhotoError(f"expected {len(scenes)} photographs, got {len(assets)}")
     return assets

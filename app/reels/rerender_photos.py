@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from app.reels.photos import (
-    FRUEHSTART_SCENE_QUERIES,
     PhotoError,
     assets_for_render,
+    build_scene_photo_queries,
     collect_scene_photos,
+    relevance_terms_from_queries,
     require_photographic_assets,
     write_attribution_manifest,
 )
@@ -56,16 +57,26 @@ def rerender_with_photos(
         audio_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source / "audio" / "voice_manifest.json", audio_dir / "voice_manifest.json")
 
+    if scene_queries is None:
+        headline = str(story.get("headline") or story.get("event_id") or "Germany news")
+        summary = " ".join(str(claim.get("text") or "") for claim in (story.get("claims") or []) if isinstance(claim, dict))
+        scene_queries = build_scene_photo_queries(
+            headline,
+            summary,
+            {"story_package": story},
+        )
+    relevance = [relevance_terms_from_queries(group) for group in scene_queries]
     photos, search_log = collect_scene_photos(
-        scene_queries or FRUEHSTART_SCENE_QUERIES,
+        scene_queries,
         destination / "assets",
+        relevance_terms=relevance,
     )
     search_log.write(destination / "image_search_log.json")
     write_attribution_manifest(photos, destination / "attribution_manifest.json", reel_id=destination.name)
     assets = assets_for_render(photos)
     (destination / "assets.json").write_text(json.dumps(assets, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    problems = require_photographic_assets(assets, expected_scenes=4)
+    problems = require_photographic_assets(assets, expected_scenes=len(scene_queries))
     if require_photos and problems:
         raise PhotoError("photographic acceptance gate failed: " + "; ".join(problems))
 

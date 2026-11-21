@@ -131,13 +131,18 @@ def test_require_photographic_assets_detects_missing_and_graphics(tmp_path: Path
         "source_url": "https://example.org/p",
         "author": "Photographer",
         "license_name": "CC BY 2.0",
+        "license_url": "https://creativecommons.org/licenses/by/2.0/",
     }
-    problems = require_photographic_assets([ok, {"path": "", "license_name": "", "author": "", "source_url": ""}], expected_scenes=2)
+    problems = require_photographic_assets(
+        [ok, {"path": "", "license_name": "", "author": "", "source_url": "", "license_url": ""}],
+        expected_scenes=2,
+    )
     assert any("scene 2" in item for item in problems)
 
     graphic = {**ok, "license_name": "original-graphic"}
     problems = require_photographic_assets([ok, graphic, ok, ok], expected_scenes=4)
     assert any("graphic placeholder" in item for item in problems)
+    assert any("license" in item.lower() or "not accepted" in item.lower() for item in problems)
 
 
 def test_scene_asset_mapping_keeps_index_with_photos(tmp_path: Path) -> None:
@@ -307,16 +312,64 @@ def _story_script(*, title_hint: str = "Kindergeld", scenes: int = 4) -> dict:
     }
 
 
-def _openverse_transport(jpeg_bytes: bytes, *, mode: str = "ok"):
+def _openverse_transport(jpeg_bytes: bytes, *, mode: str = "ok", jpeg_by_url: dict[str, bytes] | None = None):
     """Serve unique Openverse hits and JPEG bodies. Commons returns empty."""
 
+    import urllib.parse
+
     counter = {"n": 0}
+    jpeg_by_url = jpeg_by_url or {}
 
     def transport(request, timeout):
         url = request.full_url
         if "api.openverse.org" in url:
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("q", ["Germany news"])[0]
             if mode == "empty":
                 return json.dumps({"results": []}).encode("utf-8")
+            if mode == "irrelevant":
+                counter["n"] += 1
+                n = counter["n"]
+                return json.dumps(
+                    {
+                        "results": [
+                            {
+                                "title": f"unrelated beach sunset {n}",
+                                "url": f"https://live.staticflickr.com/1/irr-{n}.jpg",
+                                "foreign_landing_url": f"https://flickr.com/irr-{n}",
+                                "creator": f"Tourist{n}",
+                                "license": "by",
+                                "license_version": "2.0",
+                                "license_url": "https://creativecommons.org/licenses/by/2.0/",
+                                "provider": "flickr",
+                                "width": 1200,
+                                "height": 900,
+                                "tags": [{"name": "beach"}, {"name": "sunset"}],
+                                "description": "Vacation photo",
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+            if mode == "missing_license_url":
+                counter["n"] += 1
+                n = counter["n"]
+                return json.dumps(
+                    {
+                        "results": [
+                            {
+                                "title": query,
+                                "url": f"https://live.staticflickr.com/1/nolurl-{n}.jpg",
+                                "foreign_landing_url": f"https://flickr.com/nolurl-{n}",
+                                "creator": f"Photographer{n}",
+                                "license": "by",
+                                "license_version": "2.0",
+                                "license_url": "",
+                                "provider": "flickr",
+                                "width": 1200,
+                                "height": 900,
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
             if mode == "nc_only":
                 counter["n"] += 1
                 n = counter["n"]
@@ -324,7 +377,7 @@ def _openverse_transport(jpeg_bytes: bytes, *, mode: str = "ok"):
                     {
                         "results": [
                             {
-                                "title": f"nc-{n}",
+                                "title": query,
                                 "url": f"https://live.staticflickr.com/1/nc-{n}.jpg",
                                 "foreign_landing_url": f"https://flickr.com/nc-{n}",
                                 "creator": "Restricted",
@@ -340,11 +393,12 @@ def _openverse_transport(jpeg_bytes: bytes, *, mode: str = "ok"):
                 ).encode("utf-8")
             counter["n"] += 1
             n = counter["n"]
+            tags = [{"name": part} for part in query.split()[:6] if len(part) > 2]
             return json.dumps(
                 {
                     "results": [
                         {
-                            "title": f"photo-{n}",
+                            "title": f"{query} photograph {n}",
                             "url": f"https://live.staticflickr.com/1/ok-{n}.jpg",
                             "foreign_landing_url": f"https://flickr.com/ok-{n}",
                             "creator": f"Photographer{n}",
@@ -355,6 +409,8 @@ def _openverse_transport(jpeg_bytes: bytes, *, mode: str = "ok"):
                             "width": 1200,
                             "height": 900,
                             "attribution": f"Photographer{n} / CC BY 2.0",
+                            "tags": tags,
+                            "description": query,
                         }
                     ]
                 }
@@ -363,6 +419,8 @@ def _openverse_transport(jpeg_bytes: bytes, *, mode: str = "ok"):
             return json.dumps({"query": {"pages": {}}}).encode("utf-8")
         if mode == "download_fail":
             raise PhotoError("forced download failure")
+        if url in jpeg_by_url:
+            return jpeg_by_url[url]
         if ".jpg" in url or "staticflickr.com" in url:
             return jpeg_bytes
         raise PhotoError(f"unexpected url {url}")
@@ -421,6 +479,43 @@ def test_build_scene_photo_queries_are_dynamic_per_topic() -> None:
     assert "kindergeld" in flat_k
     assert "deutschlandticket" in flat_t
     assert "frühstartrente" not in flat_k and "fruehstart" not in flat_k
+
+
+def test_missing_storyboard_fails_without_four_scene_fallback() -> None:
+    with pytest.raises(PhotoError, match="storyboard is missing|invalid"):
+        build_scene_photo_queries(
+            "Kindergeld rises",
+            "Families in Germany.",
+            {"status": "ready", "storyboard_json": "[]", "story_package": {"scenes": []}},
+        )
+
+
+def test_irrelevant_metadata_is_rejected(tmp_path: Path, monkeypatch) -> None:
+    jpeg = tmp_path / "seed.jpg"
+    _jpeg_bytes(jpeg)
+    monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
+    with pytest.raises(PhotoError, match="no downloadable licensed photograph"):
+        retrieve_licensed_photos_for_script(
+            "Kindergeld rises to 259 euro",
+            "Families in Germany keep Kindergeld.",
+            _story_script(title_hint="Kindergeld", scenes=2),
+            tmp_path / "assets-irrelevant",
+            transport=_openverse_transport(jpeg.read_bytes(), mode="irrelevant"),
+        )
+
+
+def test_missing_license_url_is_rejected(tmp_path: Path, monkeypatch) -> None:
+    jpeg = tmp_path / "seed.jpg"
+    _jpeg_bytes(jpeg)
+    monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
+    with pytest.raises(PhotoError, match="no downloadable licensed photograph"):
+        retrieve_licensed_photos_for_script(
+            "Kindergeld rises to 259 euro",
+            "Families in Germany keep Kindergeld.",
+            _story_script(title_hint="Kindergeld", scenes=1),
+            tmp_path / "assets-nolurl",
+            transport=_openverse_transport(jpeg.read_bytes(), mode="missing_license_url"),
+        )
 
 
 def test_retrieve_licensed_photos_matches_scene_count(tmp_path: Path) -> None:
@@ -780,3 +875,209 @@ def test_acceptance_production_path_mocked_providers(tmp_path: Path) -> None:
     assets_dir = tmp_path / "storage" / "generated" / "reels" / "assets"
     photo_files = list(assets_dir.rglob("scene-*.jpg"))
     assert len(photo_files) >= 4
+
+
+def test_photo_failure_never_queues_or_calls_tts(tmp_path: Path, monkeypatch) -> None:
+    config = _reel_config(tmp_path, paid_generation=True, elevenlabs_approved=True)
+    now = datetime(2026, 11, 19, 10, 0, tzinfo=timezone.utc)
+    candidate = Candidate(
+        title="Kindergeld rises to 259 euro in 2026",
+        summary="The federal government confirmed Kindergeld rises for families in Germany.",
+        url="https://example.com/kindergeld-no-queue",
+        publisher="Bundesregierung",
+        published_at=now,
+        category="family",
+    )
+    monkeypatch.setattr("app.reels.commands.load_reel_config", lambda: config)
+    monkeypatch.setattr("app.reels.commands.discover_candidates", lambda cfg, moment: [candidate])
+    monkeypatch.setattr("app.reels.commands.verify_http", lambda item: {"ok": True, "excerpt": item.summary})
+    monkeypatch.setattr(
+        "app.reels.commands.write_grounded_script",
+        lambda candidate, checked, paid_generation=False, **kwargs: _story_script(title_hint="Kindergeld"),
+    )
+    monkeypatch.setattr(
+        "app.reels.commands.find_licensed_assets",
+        lambda candidate, script, **kwargs: (_ for _ in ()).throw(PhotoError("no downloadable licensed photograph")),
+    )
+    tts_calls: list[str] = []
+    monkeypatch.setattr(
+        "app.reels.commands.narrate_aran",
+        lambda *a, **k: tts_calls.append("tts") or {},
+    )
+    packages: list[str] = []
+    monkeypatch.setattr(
+        "app.reels.commands.write_package",
+        lambda *a, **k: packages.append("packaged"),
+    )
+    code = generate_reel_command(scheduled=False, target="almanyar", now=now)
+    assert code == 1
+    assert tts_calls == []
+    assert packages == []
+    store = ReelStore(config.database_path)
+    rows = store.recent_reels() if hasattr(store, "recent_reels") else []
+    # Inspect latest attempt status via cron log / reel rows.
+    with store.connect() as connection:
+        statuses = [row[0] for row in connection.execute("SELECT local_status FROM reels")]
+        cron = [row[0] for row in connection.execute("SELECT status FROM cron_job_logs")]
+    assert "qa_passed" not in statuses
+    assert "queued" not in statuses
+    assert "queued" not in cron
+    assert any(status == "failed" for status in statuses)
+
+
+def test_realistic_photo_remotion_integration(tmp_path: Path, monkeypatch) -> None:
+    """Existing story + saved Aran audio + mocked search of real local photos → real Remotion."""
+
+    import hashlib
+    import shutil
+
+    import app.reels.render as render_mod
+    from app.reels.qa import technical_qa_report, write_contact_sheet
+
+    source = Path("storage/generated/pilot/first-live-news-20261121-125501")
+    photo_bank = Path("storage/generated/pilot/first-live-news-20261121-125501-photos/assets")
+    story_path = source / "story_package.json"
+    audio_path = source / "audio" / "narration.mp3"
+    if not story_path.is_file() or not audio_path.is_file():
+        pytest.skip("live pilot story/audio fixtures are not present")
+    local_photos = [photo_bank / f"scene-{index:02d}.jpg" for index in range(1, 5)]
+    if not all(path.is_file() for path in local_photos):
+        pytest.skip("local licensed photograph fixtures are not present")
+
+    story = json.loads(story_path.read_text(encoding="utf-8"))
+    # Replace graphic-instruction prompts with concrete English search subjects.
+    prompts = [
+        "Bundesrat Berlin government building exterior",
+        "euro coins close up savings",
+        "pink piggy bank coins savings",
+        "retirement bankbook documents desk",
+    ]
+    for index, scene in enumerate(story["scenes"]):
+        scene["visual_prompt"] = prompts[index]
+
+    fact_pack = {}
+    fact_path = source / "fact_pack.json"
+    if fact_path.is_file():
+        fact_pack = json.loads(fact_path.read_text(encoding="utf-8"))
+
+    # Remotion serves images from the project public/ tree; do not redirect PUBLIC.
+    monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
+    run_id = f"photo-int-{tmp_path.name}"
+    stage_dir = render_mod.PUBLIC / "runtime" / run_id
+    if stage_dir.exists():
+        shutil.rmtree(stage_dir)
+
+    jpeg_by_url: dict[str, bytes] = {}
+    counter = {"n": 0}
+
+    def transport(request, timeout):
+        import urllib.parse
+
+        url = request.full_url
+        if "api.openverse.org" in url:
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("q", ["Germany"])[0]
+            counter["n"] += 1
+            n = counter["n"]
+            photo_bytes = local_photos[(n - 1) % 4].read_bytes()
+            download = f"https://live.staticflickr.com/1/live-{n}.jpg"
+            jpeg_by_url[download] = photo_bytes
+            return json.dumps(
+                {
+                    "results": [
+                        {
+                            "title": query,
+                            "url": download,
+                            "foreign_landing_url": f"https://flickr.com/live-{n}",
+                            "creator": f"FixturePhotographer{n}",
+                            "license": "by",
+                            "license_version": "2.0",
+                            "license_url": "https://creativecommons.org/licenses/by/2.0/",
+                            "provider": "flickr",
+                            "width": 1600,
+                            "height": 1200,
+                            "attribution": f"FixturePhotographer{n} / CC BY 2.0",
+                            "tags": [{"name": part} for part in query.split()[:6]],
+                            "description": query,
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+        if "commons.wikimedia.org" in url:
+            return json.dumps({"query": {"pages": {}}}).encode("utf-8")
+        if url in jpeg_by_url:
+            return jpeg_by_url[url]
+        raise PhotoError(f"unexpected url {url}")
+
+    tts_calls: list[str] = []
+    monkeypatch.setattr(
+        "app.reels.pilot.narrate_persian",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError(tts_calls.append("tts") or "TTS must not run")),
+    )
+
+    out_dir = tmp_path / "photo-integration"
+    try:
+        assets = retrieve_licensed_photos_for_script(
+            "Bundesrat approves Fruehstartrente early start pension",
+            "Eligible children in Germany receive 10 euro monthly retirement savings contributions.",
+            {"story_package": story, "fact_pack": fact_pack},
+            out_dir / "assets",
+            transport=transport,
+            reel_id=run_id,
+        )
+        assert len(assets) == 4
+        assert all(Path(asset["path"]).is_file() for asset in assets)
+        assert all(asset.get("license_url") for asset in assets)
+
+        # Preserve saved Aran narration without copying onto itself issues.
+        audio_dir = out_dir / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        reused_audio = audio_dir / "narration.mp3"
+        shutil.copy2(audio_path, reused_audio)
+
+        result = run_persian_reel_pilot(
+            out_dir=out_dir,
+            run_id=run_id,
+            story_package=story,
+            audio_path=reused_audio,
+            assets=assets,
+            require_live_voice=False,
+            overwrite=True,
+            database_path=out_dir / "pilot.sqlite3",
+        )
+        assert tts_calls == []
+        assert result.status == "qa_passed", f"{result.status}: {result.message} detail={result.detail}"
+        assert Path(result.video_path).is_file()
+        assert Path(result.contact_sheet_path).is_file()
+        assert Path(result.qa_report_path).is_file()
+
+        props_path = stage_dir / "props.json"
+        assert props_path.is_file()
+        props = json.loads(props_path.read_text(encoding="utf-8"))
+        staged = props.get("scenes") or []
+        assert len(staged) == 4
+        assert all(scene.get("graphic") is False for scene in staged)
+        assert all(scene.get("image") for scene in staged)
+
+        # Confirm Remotion staged bytes match the downloaded photographs (not graphic plates).
+        for index, scene in enumerate(staged):
+            staged_file = render_mod.PUBLIC / scene["image"]
+            assert staged_file.is_file()
+            downloaded = Path(assets[index]["path"]).read_bytes()
+            assert hashlib.sha256(staged_file.read_bytes()).hexdigest() == hashlib.sha256(downloaded).hexdigest()
+
+        qa = technical_qa_report(
+            Path(result.video_path),
+            contact_sheet=out_dir / "contact-sheet-verify.jpg",
+            narration=Path(result.narration_path).read_text(encoding="utf-8"),
+            require_audible_audio=True,
+        )
+        (out_dir / "qa_technical_verify.json").write_text(
+            json.dumps(qa, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        assert qa.get("technical_pass") is True
+        write_contact_sheet(Path(result.video_path), out_dir / "contact-sheet-final.jpg", frames=4)
+        assert (out_dir / "contact-sheet-final.jpg").is_file()
+    finally:
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir, ignore_errors=True)
