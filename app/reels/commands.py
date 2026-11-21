@@ -599,6 +599,50 @@ def probe_mp4(path: Path) -> dict:
     return probe_media(Path(path))
 
 
+def run_live_persian_pilot_command(
+    *,
+    fact_pack: Path,
+    editorial_review: Path,
+    out_dir: Path | None = None,
+    assets_json: Path | None = None,
+    database_path: Path | None = None,
+    approve_paid: bool = False,
+    estimate_only: bool = False,
+    planned_narration_chars: int = 520,
+) -> int:
+    """Phase 7 controlled live pilot. Defaults to estimate-only; never enables Cron."""
+
+    from app.reels.live_pilot import run_live_persian_reel
+
+    if not Path(fact_pack).is_file():
+        print(f"fact pack missing: {fact_pack}", flush=True)
+        return 1
+    if not Path(editorial_review).is_file():
+        print(f"editorial review missing: {editorial_review}", flush=True)
+        return 1
+    # Load .env into the process for this controlled run only (keys never printed).
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(override=False)
+    except Exception:
+        pass
+    result = run_live_persian_reel(
+        fact_pack=Path(fact_pack),
+        editorial_review=Path(editorial_review),
+        out_dir=out_dir,
+        assets_json=Path(assets_json) if assets_json is not None else None,
+        approve_paid=approve_paid,
+        estimate_only=estimate_only,
+        database_path=Path(database_path) if database_path is not None else None,
+        planned_narration_chars=planned_narration_chars,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if result.get("status") in {"qa_passed", "awaiting_approval", "estimate_only"}:
+        return 0
+    return 1
+
+
 def run_persian_pilot_command(
     *,
     story_package: Path,

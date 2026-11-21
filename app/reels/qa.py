@@ -52,6 +52,13 @@ def write_contact_sheet(video: Path, destination: Path, *, frames: int = 4) -> P
     return Path(destination)
 
 
+def audio_levels(path: Path) -> dict[str, float]:
+    """Reuse the skill volumedetect helper for silence checks."""
+
+    module = load_check_reel()
+    return module.volume(Path(path))
+
+
 def technical_qa_report(
     video: Path,
     *,
@@ -59,11 +66,21 @@ def technical_qa_report(
     narration: str = "",
     min_seconds: float = 1.0,
     max_seconds: float = 900.0,
+    require_audible_audio: bool = False,
 ) -> dict[str, Any]:
     """Build a compact technical QA report for the pilot."""
 
     probe = probe_media(video)
-    problems = validate_reel_probe(probe, min_seconds=min_seconds, max_seconds=max_seconds)
+    problems = list(validate_reel_probe(probe, min_seconds=min_seconds, max_seconds=max_seconds))
+    levels: dict[str, float] = {}
+    try:
+        levels = audio_levels(video)
+    except Exception:
+        levels = {}
+    mean_db = levels.get("mean_volume_db")
+    audible = mean_db is not None and float(mean_db) > -45.0
+    if require_audible_audio and not audible:
+        problems.append("audio silent or near-silent")
     sheet = None
     if contact_sheet is not None:
         sheet = write_contact_sheet(video, contact_sheet)
@@ -79,12 +96,18 @@ def technical_qa_report(
             "ok": bool(str(narration).strip()),
             "detail": f"{len(str(narration).strip())} characters",
         },
+        {
+            "name": "audio_not_silent",
+            "ok": audible if levels else (not require_audible_audio),
+            "detail": f"mean_volume_db={mean_db}",
+        },
     ]
     return {
-        "technical_pass": not problems and checksum_ok and bool(str(narration).strip()),
+        "technical_pass": not problems and checksum_ok and bool(str(narration).strip()) and (audible if require_audible_audio else True),
         "problems": problems,
         "checks": checks,
         "probe": probe,
+        "audio_levels": levels,
         "contact_sheet": str(sheet) if sheet and Path(sheet).is_file() else None,
         "human_review": {
             "voice_naturalness": "not reviewed",

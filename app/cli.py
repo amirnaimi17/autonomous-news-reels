@@ -101,6 +101,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Stop after story + audio staging (no Remotion)",
     )
+    live = sub.add_parser(
+        "run-live-persian-pilot",
+        help="Phase 7 ONE-run live pilot (estimate by default; --approve-paid for OpenAI+ElevenLabs once)",
+    )
+    live.add_argument("--fact-pack", type=Path, required=True)
+    live.add_argument("--editorial-review", type=Path, required=True)
+    live.add_argument("--out-dir", type=Path, default=None)
+    live.add_argument("--assets-json", type=Path, default=None, help="Scene-index-aligned assets.json")
+    live.add_argument("--database-path", type=Path, default=None, help="Temporary Reel SQLite only")
+    live.add_argument(
+        "--approve-paid",
+        action="store_true",
+        help="Explicit approval for ONE OpenAI script + ONE ElevenLabs Aran call",
+    )
+    live.add_argument("--estimate-only", action="store_true", help="Write cost estimate and stop")
+    live.add_argument(
+        "--planned-narration-chars",
+        type=int,
+        default=520,
+        help="Character count used for the pre-script ElevenLabs estimate",
+    )
     sub.add_parser("upload-outbox", help="Upload queued packages. Retains failures locally.")
     sub.add_parser("import-library", help="Record the Reels already rendered in this project")
     install = sub.add_parser("install-cron", help="Write the four Berlin generation cron lines")
@@ -122,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         "speak-narration",
         "render-reel",
         "run-persian-pilot",
+        "run-live-persian-pilot",
         "upload-outbox",
         "import-library",
         "install-cron",
@@ -156,6 +178,7 @@ def _reel_command(args: argparse.Namespace) -> int:
         install_cron_command,
         remove_cron_command,
         render_reel_command,
+        run_live_persian_pilot_command,
         run_persian_pilot_command,
         speak_narration_command,
         status_command,
@@ -200,6 +223,17 @@ def _reel_command(args: argparse.Namespace) -> int:
             database_path=args.database_path,
             overwrite=args.overwrite,
             skip_render=args.skip_render,
+        )
+    if args.command == "run-live-persian-pilot":
+        return run_live_persian_pilot_command(
+            fact_pack=args.fact_pack,
+            editorial_review=args.editorial_review,
+            out_dir=args.out_dir,
+            assets_json=args.assets_json,
+            database_path=args.database_path,
+            approve_paid=args.approve_paid,
+            estimate_only=args.estimate_only,
+            planned_narration_chars=args.planned_narration_chars,
         )
     if args.command == "upload-outbox":
         return upload_outbox_command()
