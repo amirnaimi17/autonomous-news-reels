@@ -72,8 +72,84 @@ def _assessment(candidate: Candidate, audience: str) -> dict:
     }
 
 
-def select_story(candidates: list[Candidate], store: ReelStore, now: datetime, window_hours: int) -> tuple[Candidate | None, str]:
-    """Pick the newest clear, verified-enough, non-duplicate story."""
+def _assessment_from_rank(candidate: Candidate, ranked, audience_label: str) -> dict:
+    relevance = (ranked.relevance or ranked.practical_impact or candidate.summary).strip()
+    reason = (
+        ranked.audience_interest
+        or ranked.newsworthiness
+        or f"Selected for {audience_label}: {candidate.title.strip()}"
+    ).strip()
+    return {
+        "decision": "approve",
+        "affected_audience": audience_label,
+        "practical_relevance": relevance,
+        "publication_reason": reason,
+        "evidence_urls": [candidate.url],
+    }
+
+
+def _is_duplicate(store: ReelStore, candidate: Candidate) -> bool:
+    fingerprint = story_fingerprint(candidate.url, candidate.title)
+    existing = store.get_by_fingerprint(fingerprint)
+    if existing is None:
+        return False
+    if existing["local_status"] in TERMINAL:
+        return True
+    if existing["local_status"] == "rejected":
+        return True
+    if existing["local_status"] in RETRYABLE and int(existing["retry_count"]) >= 3:
+        return True
+    return False
+
+
+def _eligible_for_ranking(
+    candidates: list[Candidate],
+    store: ReelStore,
+    now: datetime,
+    window_hours: int,
+) -> tuple[list[Candidate], str]:
+    """Fresh, non-duplicate candidates with basic source shape. No keyword gate."""
+
+    window_start = now.astimezone(timezone.utc) - timedelta(hours=window_hours)
+    ranked = sorted(candidates, key=lambda item: item.published_at, reverse=True)
+    eligible: list[Candidate] = []
+    saw_stale = False
+    saw_duplicate = False
+    saw_unverified = False
+    for candidate in ranked:
+        published = candidate.published_at.astimezone(timezone.utc)
+        if published < window_start or published > now.astimezone(timezone.utc) + timedelta(minutes=5):
+            saw_stale = True
+            continue
+        text = f"{candidate.title}\n{candidate.summary}"
+        if not candidate.summary.strip() or not candidate.url.startswith("http"):
+            saw_unverified = True
+            continue
+        if deutschlandticket_accuracy_errors(text):
+            saw_unverified = True
+            continue
+        if _is_duplicate(store, candidate):
+            saw_duplicate = True
+            continue
+        eligible.append(candidate)
+    if eligible:
+        return eligible, ""
+    if saw_duplicate and not saw_stale and not saw_unverified:
+        return [], "duplicate"
+    if saw_stale and not saw_unverified:
+        return [], "stale"
+    if saw_unverified:
+        return [], "inadequately verified"
+    return [], "no story"
+
+
+def select_story_keyword(
+    candidates: list[Candidate],
+    store: ReelStore,
+    now: datetime,
+    window_hours: int,
+) -> tuple[Candidate | None, str, dict]:
+    """Legacy keyword audience filter. Borderline/none stay rejected as irrelevant."""
 
     window_start = now.astimezone(timezone.utc) - timedelta(hours=window_hours)
     ranked = sorted(candidates, key=lambda item: item.published_at, reverse=True)
@@ -91,31 +167,111 @@ def select_story(candidates: list[Candidate], store: ReelStore, now: datetime, w
             saw_irrelevant = True
             continue
         if not candidate.summary.strip() or not candidate.url.startswith("http"):
-            return None, "inadequately verified"
+            return None, "inadequately verified", {}
         if deutschlandticket_accuracy_errors(text):
-            return None, "inadequately verified"
+            return None, "inadequately verified", {}
         assessment = _assessment(candidate, audience.result)
         if not editorial_approves(assessment, [candidate.url]):
-            return None, "inadequately verified"
-        fingerprint = story_fingerprint(candidate.url, candidate.title)
-        existing = store.get_by_fingerprint(fingerprint)
-        if existing is not None and existing["local_status"] in TERMINAL:
+            return None, "inadequately verified", {}
+        if _is_duplicate(store, candidate):
             saw_duplicate = True
             continue
-        if existing is not None and existing["local_status"] == "rejected":
-            saw_duplicate = True
-            continue
-        if existing is not None and existing["local_status"] in RETRYABLE and int(existing["retry_count"]) >= 3:
-            saw_duplicate = True
-            continue
-        return candidate, ""
+        return candidate, "", {"selection": "keyword", "audience": audience.result}
     if saw_duplicate and not saw_irrelevant:
-        return None, "duplicate"
+        return None, "duplicate", {}
     if saw_stale and not saw_irrelevant:
-        return None, "stale"
+        return None, "stale", {}
     if saw_irrelevant:
-        return None, "irrelevant"
-    return None, "no story"
+        return None, "irrelevant", {}
+    return None, "no story", {}
+
+
+def select_story_ai(
+    candidates: list[Candidate],
+    store: ReelStore,
+    now: datetime,
+    config: ReelConfig,
+    *,
+    rank_complete=None,
+) -> tuple[Candidate | None, str, dict]:
+    """Rank retrieved articles with the configured editorial audience profile."""
+
+    from app.services.news.editorial_rank import get_audience_profile, rank_retrieved_articles
+
+    eligible, reason = _eligible_for_ranking(candidates, store, now, config.news_window_hours)
+    if not eligible:
+        return None, reason or "no story", {"selection": "ai", "eligible": 0}
+
+    if config.editorial_rank_provider == "openai" and not config.editorial_rank_approved and rank_complete is None:
+        return None, "editorial ranking not approved", {"selection": "ai", "eligible": len(eligible)}
+
+    from app.core.exceptions import ConfigurationError, GroundingError
+
+    profile = get_audience_profile(config.editorial_audience_id, path=config.editorial_audiences_file)
+    # Profile min_score wins unless REEL_EDITORIAL_MIN_SCORE is explicitly set.
+    threshold = (
+        float(config.editorial_min_score)
+        if config.editorial_min_score is not None
+        else float(profile.min_score)
+    )
+    detail = {"selection": "ai", "eligible": len(eligible), "min_score": threshold}
+    try:
+        ranking = rank_retrieved_articles(
+            eligible,
+            audience_id=config.editorial_audience_id,
+            audiences_file=config.editorial_audiences_file,
+            min_score=threshold,
+            now=now,
+            model=config.script_model,
+            complete=rank_complete,
+        )
+    except (ConfigurationError, GroundingError) as exc:
+        detail["ranking_error"] = str(exc)
+        return None, str(exc), detail
+    detail["ranking"] = ranking.as_detail()
+    if ranking.status != "selected" or ranking.selected is None:
+        return None, ranking.message or "no suitable article", detail
+
+    chosen = next((item for item in eligible if item.url == ranking.selected.url), None)
+    if chosen is None:
+        # Map back by assigned order id.
+        from app.services.news.editorial_rank import assign_article_ids
+
+        rows = assign_article_ids(eligible)
+        match = next((row for row in rows if row["id"] == ranking.selected_id), None)
+        chosen = match["candidate"] if match else None
+    if chosen is None:
+        return None, "selected article missing from retrieved set", detail
+
+    assessment = _assessment_from_rank(chosen, ranking.selected, profile.label)
+    if not editorial_approves(assessment, [chosen.url]):
+        return None, "inadequately verified", detail
+    if _is_duplicate(store, chosen):
+        return None, "duplicate", detail
+    detail["selected"] = {
+        "title": chosen.title,
+        "url": chosen.url,
+        "score": ranking.selected.score,
+        "relevance": ranking.selected.relevance,
+    }
+    return chosen, "", detail
+
+
+def select_story(
+    candidates: list[Candidate],
+    store: ReelStore,
+    now: datetime,
+    window_hours: int,
+    *,
+    config: ReelConfig | None = None,
+    rank_complete=None,
+) -> tuple[Candidate | None, str, dict]:
+    """Pick one story. Uses AI ranking when configured; otherwise keyword filter."""
+
+    if config is not None and config.editorial_rank_provider == "openai":
+        return select_story_ai(candidates, store, now, config, rank_complete=rank_complete)
+    candidate, reason, detail = select_story_keyword(candidates, store, now, window_hours)
+    return candidate, reason, detail
 
 
 def run_generation(
@@ -131,6 +287,7 @@ def run_generation(
     narrate,
     render_video,
     probe_video,
+    rank_complete=None,
 ) -> StageResult:
     """Run one attempt and always record it, including a rejection."""
 
@@ -146,10 +303,20 @@ def run_generation(
         store.finish_attempt(attempt_id, status="skipped", message=message, now=now)
         return StageResult("skipped", message)
 
-    candidate, reason = select_story(candidates, store, now, config.news_window_hours)
+    candidate, reason, selection_detail = select_story(
+        candidates,
+        store,
+        now,
+        config.news_window_hours,
+        config=config,
+        rank_complete=rank_complete,
+    )
     if candidate is None:
         store.finish_attempt(attempt_id, status="rejected", message=reason or "no story", now=now)
-        return StageResult("rejected", reason or "no story")
+        return StageResult("rejected", reason or "no story", detail=selection_detail)
+
+    def _stage(status: str, message: str, reel_id: str = "") -> StageResult:
+        return StageResult(status, message, reel_id, detail=selection_detail)
 
     fingerprint = story_fingerprint(candidate.url, candidate.title)
     existing = store.get_by_fingerprint(fingerprint)
@@ -168,7 +335,7 @@ def run_generation(
             attempt_id,
             now,
         )
-        return StageResult("rejected", "inadequately verified", reel_id)
+        return _stage("rejected", "inadequately verified", reel_id)
 
     script = write_script(candidate, checked, paid_generation=config.paid_generation)
     row = _base_row(config, candidate, reel_id, fingerprint, retry_count, checked, now)
@@ -194,12 +361,12 @@ def run_generation(
             now=now,
         )
         store.finish_attempt(attempt_id, status=row["local_status"], message=row["error_message"], reel_id=reel_id, now=now)
-        return StageResult(row["local_status"], row["error_message"], reel_id)
+        return _stage(row["local_status"], row["error_message"], reel_id)
 
     narration = script["narration"]
     if deutschlandticket_accuracy_errors(narration):
         _record_rejected(store, config, candidate, reel_id, fingerprint, retry_count, "inadequately verified", attempt_id, now)
-        return StageResult("rejected", "inadequately verified", reel_id)
+        return _stage("rejected", "inadequately verified", reel_id)
 
     try:
         assets = find_assets(candidate, script)
@@ -219,7 +386,7 @@ def run_generation(
             script=script,
             checked=checked,
         )
-        return StageResult("failed", message, reel_id)
+        return _stage("failed", message, reel_id)
     if not assets:
         message = "no licensed photographs"
         _record_failed(
@@ -236,7 +403,7 @@ def run_generation(
             script=script,
             checked=checked,
         )
-        return StageResult("failed", message, reel_id)
+        return _stage("failed", message, reel_id)
     # Mandatory photographs: reject graphic placeholders before any paid TTS.
     graphic_kinds = {"remotion-graphic", "original-graphic", "silent-fixture"}
     if any(
@@ -260,11 +427,11 @@ def run_generation(
             script=script,
             checked=checked,
         )
-        return StageResult("failed", message, reel_id)
+        return _stage("failed", message, reel_id)
     for asset in assets:
         if asset.get("kind") == "paid-image" and not config.paid_generation:
             _record_rejected(store, config, candidate, reel_id, fingerprint, retry_count, "paid image refused", attempt_id, now)
-            return StageResult("rejected", "paid image refused", reel_id)
+            return _stage("rejected", "paid image refused", reel_id)
 
     estimate = float(script.get("voice_estimate_usd") or 0)
     if config.paid_generation and not _within_budget(config, store, estimate, now):
@@ -274,7 +441,7 @@ def run_generation(
         row["generation_finished_at"] = utc_now(now)
         store.upsert_reel(row)
         store.finish_attempt(attempt_id, status="rejected", message="cost limit", reel_id=reel_id, now=now)
-        return StageResult("rejected", "cost limit", reel_id)
+        return _stage("rejected", "cost limit", reel_id)
 
     row["narration_fa"] = narration
     row["caption_fa"] = script.get("caption", "")
@@ -307,7 +474,7 @@ def run_generation(
             now=now,
         )
         store.finish_attempt(attempt_id, status="blocked_paid", message=row["error_message"], reel_id=reel_id, now=now)
-        return StageResult("blocked_paid", row["error_message"], reel_id)
+        return _stage("blocked_paid", row["error_message"], reel_id)
 
     try:
         audio = narrate(narration, config.voice_id)
@@ -321,7 +488,7 @@ def run_generation(
         store.upsert_reel(row)
         store.add_error(reel_id=reel_id, attempt_id=attempt_id, stage="render", message=row["error_message"], retryable=True, now=now)
         store.finish_attempt(attempt_id, status="failed", message=row["error_message"], reel_id=reel_id, now=now)
-        return StageResult("failed", row["error_message"], reel_id)
+        return _stage("failed", row["error_message"], reel_id)
 
     store.add_audio(reel_id, audio)
     store.add_cost(
@@ -365,7 +532,7 @@ def run_generation(
     row["generation_finished_at"] = utc_now(now)
     store.upsert_reel(row)
     store.finish_attempt(attempt_id, status=row["local_status"], message=row["error_message"], reel_id=reel_id, now=now)
-    return StageResult(row["local_status"], row["error_message"], reel_id)
+    return _stage(row["local_status"], row["error_message"], reel_id)
 
 
 def _within_budget(config: ReelConfig, store: ReelStore, estimate: float, now: datetime) -> bool:

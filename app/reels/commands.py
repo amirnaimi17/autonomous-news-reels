@@ -54,6 +54,134 @@ def scene_assets_from_paths(
     return assets
 
 
+def rank_news_command(
+    *,
+    limit: int = 20,
+    approve: bool = False,
+    now: datetime | None = None,
+    complete=None,
+    config: ReelConfig | None = None,
+) -> int:
+    """Fetch RSS candidates, rank with AI editorial service, print top three.
+
+    Never writes scripts, audio, images, or videos. Uses a copied SQLite file for
+    duplicate checks so the production database stays effectively read-only.
+    Live OpenAI calls require ``approve`` or ``REEL_EDITORIAL_RANK_APPROVED``.
+    """
+
+    import shutil
+    import tempfile
+
+    from app.core.exceptions import ConfigurationError, GroundingError
+    from app.reels.pipeline import _eligible_for_ranking
+    from app.services.news.editorial_rank import (
+        prepare_ranking_request,
+        rank_retrieved_articles,
+    )
+
+    settings = config or load_reel_config()
+    moment = now or datetime.now(timezone.utc)
+    if limit < 1:
+        print("error: --limit must be >= 1")
+        return 2
+
+    tmp_root = Path(tempfile.mkdtemp(prefix="rank-news-"))
+    isolated_db = tmp_root / "rank-news.sqlite3"
+    if settings.database_path.is_file():
+        shutil.copy2(settings.database_path, isolated_db)
+    store = ReelStore(isolated_db)
+    store.migrate()
+
+    candidates = discover_candidates(settings, moment)
+    eligible, reason = _eligible_for_ranking(candidates, store, moment, settings.news_window_hours)
+    pool = eligible[: max(1, limit)] if eligible else []
+    print(f"retrieved={len(candidates)} eligible={len(eligible)} ranking_pool={len(pool)}")
+    if not pool:
+        print(f"rejected: {reason or 'no story'}")
+        return 0
+
+    approved = bool(approve or settings.editorial_rank_approved)
+    try:
+        prepared = prepare_ranking_request(
+            pool,
+            audience_id=settings.editorial_audience_id,
+            audiences_file=settings.editorial_audiences_file,
+            min_score=settings.editorial_min_score,
+            now=moment,
+            model=settings.script_model,
+        )
+    except (ConfigurationError, GroundingError) as exc:
+        print(f"error: {exc}")
+        return 1
+
+    usage_est = prepared["usage_estimate"]
+    print(
+        "usage_estimate: "
+        f"model={usage_est.get('model')} "
+        f"input_tokens≈{usage_est.get('input_tokens_est')} "
+        f"output_tokens≈{usage_est.get('output_tokens_est')} "
+        f"usd≈{usage_est.get('usd_est')} "
+        f"({usage_est.get('pricing_note')})"
+    )
+    print(
+        f"audience={prepared['profile'].id} min_score={prepared['min_score']} "
+        f"(profile_default={prepared['profile'].min_score})"
+    )
+
+    if settings.editorial_rank_provider != "openai" and complete is None:
+        print("rejected: set REEL_EDITORIAL_RANK_PROVIDER=openai to rank with AI")
+        return 0
+    if not approved and complete is None:
+        print("rejected: editorial ranking not approved (pass --approve or set REEL_EDITORIAL_RANK_APPROVED=true)")
+        print("no OpenAI call was made")
+        return 0
+
+    try:
+        ranking = rank_retrieved_articles(
+            pool,
+            audience_id=settings.editorial_audience_id,
+            audiences_file=settings.editorial_audiences_file,
+            min_score=settings.editorial_min_score,
+            now=moment,
+            model=settings.script_model,
+            complete=complete,
+        )
+    except (ConfigurationError, GroundingError) as exc:
+        print(f"error: {exc}")
+        return 1
+
+    usage = ranking.usage or usage_est
+    print(
+        "usage: "
+        f"model={usage.get('model')} "
+        f"input_tokens={usage.get('input_tokens', usage.get('input_tokens_est'))} "
+        f"output_tokens={usage.get('output_tokens', usage.get('output_tokens_est'))} "
+        f"usd≈{usage.get('usd_est')} "
+        f"({usage.get('pricing_note', 'estimate')})"
+    )
+    print(f"status={ranking.status} selected_id={ranking.selected_id or '-'}")
+    if ranking.message:
+        print(f"message: {ranking.message}")
+    print("editorial_top3:")
+    for item in ranking.top[:3]:
+        print(
+            f"  - id={item.article_id} score={item.score:.2f} suitable={item.suitable} "
+            f"{item.title}"
+        )
+        print(f"    url: {item.url}")
+        if item.relevance:
+            print(f"    relevance: {item.relevance}")
+        if item.practical_impact:
+            print(f"    practical_impact: {item.practical_impact}")
+        if item.newsworthiness:
+            print(f"    newsworthiness: {item.newsworthiness}")
+        if item.audience_interest:
+            print(f"    audience_interest: {item.audience_interest}")
+        if item.freshness:
+            print(f"    freshness: {item.freshness}")
+    return 0 if ranking.status in {"selected", "rejected"} else 1
+
+
 def generate_reel_command(*, scheduled: bool, target: str, now: datetime | None = None) -> int:
     config = load_reel_config()
     if target:
@@ -98,13 +226,28 @@ def generate_reel_command(*, scheduled: bool, target: str, now: datetime | None 
             result_status = "queued"
         else:
             result_status = result.status
+        ranking = (result.detail or {}).get("ranking") if isinstance(result.detail, dict) else None
         store.add_cron_log(
             job_name="generate_scheduled_reel" if scheduled else "generate_reel",
             status=result_status,
             message=result.message or result.reel_id,
-            detail={"reel_id": result.reel_id, "scheduled": scheduled},
+            detail={
+                "reel_id": result.reel_id,
+                "scheduled": scheduled,
+                "selection": (result.detail or {}).get("selection") if isinstance(result.detail, dict) else None,
+                "ranking_top": (ranking or {}).get("top") if isinstance(ranking, dict) else None,
+            },
             now=moment,
         )
+        if isinstance(ranking, dict) and ranking.get("top"):
+            print("editorial_top3:")
+            for item in ranking["top"][:3]:
+                print(
+                    f"  - score={item.get('score')} suitable={item.get('suitable')} "
+                    f"{item.get('title')} | {item.get('url')}"
+                )
+                if item.get("relevance"):
+                    print(f"    relevance: {item.get('relevance')}")
         print(f"{result_status}: {result.message or result.reel_id}")
         return 0 if result_status != "failed" else 1
     finally:
@@ -750,4 +893,9 @@ def _with_target(config: ReelConfig, target: str) -> ReelConfig:
         script_output_dir=config.script_output_dir,
         elevenlabs_approved=config.elevenlabs_approved,
         audio_output_dir=config.audio_output_dir,
+        editorial_rank_provider=config.editorial_rank_provider,
+        editorial_rank_approved=config.editorial_rank_approved,
+        editorial_audience_id=config.editorial_audience_id,
+        editorial_min_score=config.editorial_min_score,
+        editorial_audiences_file=config.editorial_audiences_file,
     )

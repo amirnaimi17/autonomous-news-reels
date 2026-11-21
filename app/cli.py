@@ -35,6 +35,16 @@ def build_parser() -> argparse.ArgumentParser:
     generate = sub.add_parser("generate-reel", help="Research and, when paid generation is enabled, render one Reel")
     generate.add_argument("--target", default="almanyar")
     generate.add_argument("--scheduled", action="store_true")
+    rank = sub.add_parser(
+        "rank-news",
+        help="Fetch RSS candidates and AI-rank top stories (no script/audio/video; OpenAI only with --approve)",
+    )
+    rank.add_argument("--limit", type=int, default=20, help="Max eligible articles to send for ranking")
+    rank.add_argument(
+        "--approve",
+        action="store_true",
+        help="Allow one live OpenAI ranking call (or set REEL_EDITORIAL_RANK_APPROVED=true)",
+    )
     deliver = sub.add_parser("deliver-existing", help="Package the already rendered Deutschlandticket Reel")
     deliver.add_argument("--source", default="storage/generated/pilot/20261119-deutschlandticket-2027-visual")
     speak = sub.add_parser(
@@ -139,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         "init-reel-db",
         "reel-status",
         "generate-reel",
+        "rank-news",
         "deliver-existing",
         "speak-narration",
         "render-reel",
@@ -176,6 +187,7 @@ def _reel_command(args: argparse.Namespace) -> int:
         deliver_existing_command,
         generate_reel_command,
         install_cron_command,
+        rank_news_command,
         remove_cron_command,
         render_reel_command,
         run_live_persian_pilot_command,
@@ -196,6 +208,8 @@ def _reel_command(args: argparse.Namespace) -> int:
         return status_command()
     if args.command == "generate-reel":
         return generate_reel_command(scheduled=args.scheduled, target=args.target)
+    if args.command == "rank-news":
+        return rank_news_command(limit=args.limit, approve=args.approve)
     if args.command == "deliver-existing":
         return deliver_existing_command(Path(args.source))
     if args.command == "speak-narration":

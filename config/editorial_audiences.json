@@ -1,0 +1,25 @@
+{
+  "iranians_in_germany": {
+    "id": "iranians_in_germany",
+    "label": "Persian-speaking residents of Germany",
+    "language_hint": "fa-IR audience; sources may be German or English",
+    "content_categories": [
+      "household_benefits",
+      "work_and_wages",
+      "housing_and_rent",
+      "residence_and_immigration",
+      "health_insurance",
+      "education",
+      "transport",
+      "consumer_protection",
+      "taxes_and_bureaucracy"
+    ],
+    "selection_notes": [
+      "Prefer practical impact on daily life in Germany over geopolitics.",
+      "Do not require the article to mention Iran or Iranians.",
+      "General German policy, benefits, work, housing, and bureaucracy news can be highly relevant.",
+      "Reject celebrity, sports, or distant world news with no Germany household effect."
+    ],
+    "min_score": 0.60
+  }
+}
