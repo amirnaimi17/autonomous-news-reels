@@ -81,7 +81,7 @@ No provider credential is required to boot, test, or initialize the database.
 | Capability | Phase 1 behavior | Later option | Typical cost |
 | --- | --- | --- | --- |
 | News | RSS and Atom from `NEWS_SOURCES` or `NEWS_SOURCES_FILE`. No default feeds. | A paid API can sit behind the same fetch method. | $0 for public RSS |
-| Script | Extractive fallback copies source sentences and refuses new numbers. | A small model behind the same request model. | About $0.001 per reel on a mini model, or $0 offline |
+| Script | Extractive English fallback copies source sentences and refuses new numbers. Phase 3 adds grounded Persian `story_package.json` via `REEL_SCRIPT_PROVIDER=openai` (mockable transport; key from `OPENAI_API_KEY`). | Same Chat Completions adapter with a stronger model. | About $0.001–0.01 per reel on a mini model, or $0 with an injected mock |
 | Images | Solid PPM frame. News cards must not invent a photograph of an event. | Typographic cards via Pillow, or a sourced photo. Generative images stay optional because they can fabricate scenes. | $0 for cards. Generative images are often $0.02–$0.08 each. |
 | Voice | Silent WAV sized from the word count. This is not a voice. | Configurable TTS. Roughly $0.01 per reel for a cloud voice. | $0 until a voice is chosen |
 | Video | Encoder probe. `auto` picks `h264_nvenc` on this machine, else `libx264`. | FFmpeg render at 1080×1920. | $0, local encode |

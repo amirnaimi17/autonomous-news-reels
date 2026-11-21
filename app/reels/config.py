@@ -59,6 +59,9 @@ class ReelConfig:
     sources_file: Path
     voice_id: str
     max_attempts: int
+    script_provider: str
+    script_model: str
+    script_output_dir: Path
 
     @property
     def zone(self) -> ZoneInfo:
@@ -70,6 +73,7 @@ def load_reel_config() -> ReelConfig:
 
     root = Path(os.getenv("REEL_WORKING_DIRECTORY", Path.cwd()))
     hours = _hours(os.getenv("REEL_GENERATION_HOURS", "7,11,15,19"))
+    script_provider = os.getenv("REEL_SCRIPT_PROVIDER", "off").strip().lower() or "off"
     return ReelConfig(
         database_path=Path(os.getenv("REEL_DATABASE_PATH", root / "data" / "news_reels.db")),
         outbox_dir=Path(os.getenv("REEL_OUTBOX_DIR", root / "storage" / "outbox")),
@@ -92,4 +96,9 @@ def load_reel_config() -> ReelConfig:
         sources_file=Path(os.getenv("REEL_SOURCES_FILE", root / "config" / "news_sources.json")),
         voice_id=os.getenv("REEL_VOICE_ID", "PEdcOLzbXYhL8IKOswXB"),
         max_attempts=int(os.getenv("REEL_MAX_ATTEMPTS", "3")),
+        script_provider=script_provider,
+        script_model=os.getenv("OPENAI_SCRIPT_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
+        script_output_dir=Path(
+            os.getenv("REEL_SCRIPT_OUTPUT_DIR", root / "storage" / "generated" / "reels" / "scripts")
+        ),
     )
