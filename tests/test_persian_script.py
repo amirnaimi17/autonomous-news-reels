@@ -65,6 +65,8 @@ def _config(tmp_path: Path) -> ReelConfig:
         script_provider="openai",
         script_model="gpt-4o-mini",
         script_output_dir=tmp_path / "scripts",
+        elevenlabs_approved=False,
+        audio_output_dir=tmp_path / "audio",
     )
 
 

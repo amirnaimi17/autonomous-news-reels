@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -36,6 +37,19 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--scheduled", action="store_true")
     deliver = sub.add_parser("deliver-existing", help="Package the already rendered Deutschlandticket Reel")
     deliver.add_argument("--source", default="storage/generated/pilot/20261119-deutschlandticket-2027-visual")
+    speak = sub.add_parser(
+        "speak-narration",
+        help="Voice-only Persian TTS test via ElevenLabs Aran (no video, cron, or publish)",
+    )
+    speak.add_argument("--text", default="", help="Persian narration to speak")
+    speak.add_argument("--story-package", type=Path, default=None, help="Use scene narrations from a story_package.json")
+    speak.add_argument("--out", type=Path, default=None, help="Output MP3 path")
+    speak.add_argument("--voice-id", default="", help="Override REEL_VOICE_ID / Aran")
+    speak.add_argument(
+        "--approve",
+        action="store_true",
+        help="Explicitly allow one live ElevenLabs request (requires ELEVENLABS_API_KEY)",
+    )
     sub.add_parser("upload-outbox", help="Upload queued packages. Retains failures locally.")
     sub.add_parser("import-library", help="Record the Reels already rendered in this project")
     install = sub.add_parser("install-cron", help="Write the four Berlin generation cron lines")
@@ -54,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         "reel-status",
         "generate-reel",
         "deliver-existing",
+        "speak-narration",
         "upload-outbox",
         "import-library",
         "install-cron",
@@ -82,13 +97,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _reel_command(args: argparse.Namespace) -> int:
-    from pathlib import Path
-
     from app.reels.commands import (
         deliver_existing_command,
         generate_reel_command,
         install_cron_command,
         remove_cron_command,
+        speak_narration_command,
         status_command,
         upload_outbox_command,
     )
@@ -106,6 +120,14 @@ def _reel_command(args: argparse.Namespace) -> int:
         return generate_reel_command(scheduled=args.scheduled, target=args.target)
     if args.command == "deliver-existing":
         return deliver_existing_command(Path(args.source))
+    if args.command == "speak-narration":
+        return speak_narration_command(
+            text=args.text,
+            story_package=args.story_package,
+            out=args.out,
+            approve=args.approve,
+            voice_id=args.voice_id,
+        )
     if args.command == "upload-outbox":
         return upload_outbox_command()
     if args.command == "import-library":

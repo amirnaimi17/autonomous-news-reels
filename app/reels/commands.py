@@ -18,10 +18,10 @@ from app.reels.package import file_sha256, write_package
 from app.reels.pipeline import Candidate, run_generation
 from app.reels.store import ReelStore, utc_now
 from app.reels.upload import UploadTransport, upload_package
+from app.reels.voice import ARAN_VOICE, default_audio_path, narrate_persian
 from app.services.news.accuracy import deutschlandticket_accuracy_errors
 from app.services.news_sources.rss import RssNewsSource, UrllibTransport
 
-ARAN_VOICE = "PEdcOLzbXYhL8IKOswXB"
 EXISTING_REEL = "20261119-deutschlandticket-2027-visual"
 
 
@@ -210,6 +210,7 @@ def status_command() -> int:
     print(f"database: {config.database_path}")
     print(f"paid generation: {config.paid_generation}")
     print(f"script provider: {config.script_provider}")
+    print(f"elevenlabs approved: {config.elevenlabs_approved}")
     print(f"hours Europe/Berlin: {', '.join(str(hour) for hour in config.generation_hours)}")
     print("attempts:")
     for row in store.recent_attempts(10):
@@ -387,24 +388,108 @@ def find_licensed_assets(candidate: Candidate, script: dict) -> list[dict]:
     ]
 
 
-def narrate_aran(text: str, voice_id: str) -> dict:
-    """Call ElevenLabs only as the wired production narrator.
+def narrate_aran(
+    text: str,
+    voice_id: str,
+    *,
+    transport=None,
+    config: ReelConfig | None = None,
+    out_path: Path | None = None,
+    approved: bool | None = None,
+) -> dict:
+    """Synthesize Persian narration with the skill ElevenLabs client (Aran).
 
-    The command path reaches this only when paid generation is already on
-    and the script transport returned a narration. The default script writer
-    stops before that.
+    The pipeline reaches this only when ``REEL_PAID_GENERATION`` is on. Live HTTP
+    still requires ``REEL_ELEVENLABS_APPROVED=true`` (or an injected transport for
+    tests). This function does not render video.
     """
 
-    import importlib.util
+    settings = config or load_reel_config()
+    allow = settings.elevenlabs_approved if approved is None else approved
+    destination = out_path or default_audio_path(settings.audio_output_dir, text)
+    ledger = settings.working_directory / "storage" / "cost-ledger" / "usage.jsonl"
+    return narrate_persian(
+        text,
+        voice_id or settings.voice_id or ARAN_VOICE,
+        out_path=destination,
+        approved=allow,
+        transport=transport,
+        ledger_path=ledger,
+    )
 
-    path = Path(__file__).resolve().parents[2] / ".cursor" / "skills" / "persian-tts" / "scripts" / "elevenlabs.py"
-    spec = importlib.util.spec_from_file_location("reel_elevenlabs", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("ElevenLabs client is missing")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    request = module.speech_request(text, voice_id or ARAN_VOICE)
-    raise RuntimeError(f"paid narration is enabled but this process will not send {request['url']} without an explicit sender")
+
+def speak_narration_command(
+    *,
+    text: str = "",
+    story_package: Path | None = None,
+    out: Path | None = None,
+    approve: bool = False,
+    voice_id: str = "",
+) -> int:
+    """Isolated voice-only test. Never starts video, cron, or publishing."""
+
+    config = load_reel_config()
+    narration = text.strip()
+    if story_package is not None:
+        package = json.loads(Path(story_package).read_text(encoding="utf-8"))
+        scenes = package.get("scenes") or []
+        narration = " ".join(
+            str(scene.get("narration") or "").strip()
+            for scene in scenes
+            if isinstance(scene, dict) and str(scene.get("narration") or "").strip()
+        )
+    if not narration:
+        print("narration text is empty; pass --text or --story-package", flush=True)
+        return 1
+    if not approve and not config.elevenlabs_approved:
+        from app.reels.voice import load_elevenlabs, prepare_spoken
+
+        module = load_elevenlabs()
+        spoken = prepare_spoken(narration)
+        request = module.speech_request(spoken, voice_id or config.voice_id or ARAN_VOICE)
+        print(
+            json.dumps(
+                {
+                    "sent": False,
+                    "reason": "pass --approve (and set ELEVENLABS_API_KEY) for a live paid call",
+                    "request": request,
+                    "characters": len(spoken),
+                    "estimate_usd": round(len(spoken) * 0.08 / 1000, 6),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 2
+    destination = out or default_audio_path(config.audio_output_dir, narration)
+    try:
+        result = narrate_aran(
+            narration,
+            voice_id or config.voice_id,
+            config=config,
+            out_path=destination,
+            approved=True if approve else config.elevenlabs_approved,
+        )
+    except Exception as exc:
+        print(f"voice failed: {exc}", flush=True)
+        return 1
+    print(
+        json.dumps(
+            {
+                "sent": True,
+                "path": result["path"],
+                "provider": result["provider"],
+                "voice_id": result["voice_id"],
+                "model_id": result["model_id"],
+                "duration_seconds": result["duration_seconds"],
+                "characters": result["characters"],
+                "usd": result["usd"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
 
 
 def render_with_remotion(script: dict, assets: list[dict], audio: dict) -> dict:
@@ -494,4 +579,6 @@ def _with_target(config: ReelConfig, target: str) -> ReelConfig:
         script_provider=config.script_provider,
         script_model=config.script_model,
         script_output_dir=config.script_output_dir,
+        elevenlabs_approved=config.elevenlabs_approved,
+        audio_output_dir=config.audio_output_dir,
     )
