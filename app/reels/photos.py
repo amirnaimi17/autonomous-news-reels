@@ -1,14 +1,13 @@
-"""Search, license-gate, and download real photographs for Reel scenes.
+"""Search and download visually relevant photographs for Reel scenes.
 
-Discovery uses Openverse (Creative Commons catalog) and optionally Wikimedia
-Commons. Google Images is not scraped. License acceptance reuses
-``.cursor/skills/reel-image-generation/scripts/commons_assets.reuse_decision``.
-AI image generation is never used.
+Discovery uses Openverse and Wikimedia Commons. Google Images is not scraped.
+Selection prioritizes scene relevance, resolution, and downloadability.
+License, author, and attribution metadata are recorded when present but are
+never required to accept an image. AI image generation is never used.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 import subprocess
@@ -16,24 +15,23 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Sequence
 from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[2]
-_COMMONS_ASSETS = (
-    ROOT / ".cursor" / "skills" / "reel-image-generation" / "scripts" / "commons_assets.py"
-)
-USER_AGENT = "autonomous-news-reels/1.0 (local pilot; licensed photo retrieval)"
+USER_AGENT = "autonomous-news-reels/1.0 (local pilot; scene photo retrieval)"
 OPENVERSE_API = "https://api.openverse.org/v1/images/"
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
+MIN_IMAGE_WIDTH = 640
+MIN_IMAGE_HEIGHT = 480
 
 Transport = Callable[[urllib.request.Request, float], bytes]
 
 
 class PhotoError(RuntimeError):
-    """Licensed photograph retrieval or validation failed."""
+    """Photograph retrieval or validation failed."""
 
 
 @dataclass
@@ -83,16 +81,6 @@ class SearchLog:
         return path
 
 
-def load_reuse_decision():
-    spec = importlib.util.spec_from_file_location("reel_commons_assets", _COMMONS_ASSETS)
-    if spec is None or spec.loader is None:
-        raise PhotoError("commons_assets.py is missing")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.reuse_decision
-
-
-_MISSING_AUTHORS = {"", "unknown", "n/a", "na", "none", "null", "anonymous", "anon"}
 _GRAPHIC_PROMPT_HINTS = (
     "graphic",
     "typography",
@@ -137,27 +125,31 @@ def license_evidence_problems(
     author: str,
     restrictions: str | None = None,
 ) -> list[str]:
-    """Reject incomplete or non-reusable licensing evidence. Never assume reuse is allowed."""
+    """Deprecated no-op kept for callers/tests.
+
+    Licensing metadata is optional for scene photo selection. Always returns [].
+    """
+
+    del license_name, license_url, source_url, author, restrictions
+    return []
+
+
+def quality_problems(
+    *,
+    width: int | None,
+    height: int | None,
+    min_width: int = MIN_IMAGE_WIDTH,
+    min_height: int = MIN_IMAGE_HEIGHT,
+) -> list[str]:
+    """Reject images that are too small for Reel framing."""
 
     problems: list[str] = []
-    name = (license_name or "").strip()
-    url = (license_url or "").strip()
-    source = (source_url or "").strip()
-    creator = (author or "").strip()
-    if not name:
-        problems.append("missing license_name")
-    if not source:
-        problems.append("missing original source_url")
-    if creator.casefold() in _MISSING_AUTHORS:
-        problems.append("missing photographer/author")
-    if not url:
-        problems.append("missing license_url")
-    elif not (url.startswith("http://") or url.startswith("https://")):
-        problems.append("license_url is not an http(s) link")
-    if name:
-        decision = load_reuse_decision()(name, restrictions or None)
-        if not decision.get("accepted"):
-            problems.append(str(decision.get("reason") or "license not accepted for reuse"))
+    w = int(width or 0)
+    h = int(height or 0)
+    if w and w < min_width:
+        problems.append(f"width {w} below {min_width}")
+    if h and h < min_height:
+        problems.append(f"height {h} below {min_height}")
     return problems
 
 
@@ -257,6 +249,46 @@ _VISUAL_FILLER = _RELAX_DROP | {
 }
 
 
+_GEO_ONLY = {
+    "germany",
+    "german",
+    "deutschland",
+    "berlin",
+    "europe",
+    "european",
+}
+
+
+def _is_weak_search_query(query: str) -> bool:
+    """Reject meaningless or geo-only queries such as 'German Germany'."""
+
+    tokens = [
+        token.casefold()
+        for token in _tokenize(query)
+        if token.casefold() not in _STOPWORDS
+    ]
+    if len(tokens) < 2:
+        return True
+    non_geo = [token for token in tokens if token not in _GEO_ONLY]
+    return len(non_geo) < 1
+
+
+def _with_location(phrase: str, *, germany: str = "Germany") -> list[str]:
+    """Return phrase plus an optional location variant without redundant geo stacking."""
+
+    cleaned = " ".join(str(phrase or "").split()).strip()
+    if not cleaned:
+        return []
+    variants = [cleaned]
+    folded = cleaned.casefold()
+    if germany.casefold() not in folded and "deutschland" not in folded:
+        # Avoid "German Germany" / "Berlin Germany" style redundancy.
+        lead = _tokenize(cleaned)
+        if lead and lead[0].casefold() not in _GEO_ONLY:
+            variants.append(f"{cleaned} {germany}")
+    return variants
+
+
 def searchable_visual_queries(visual: str, *, germany: str = "Germany") -> list[str]:
     """Turn a long art-direction prompt into short Commons/Openverse search phrases.
 
@@ -275,15 +307,86 @@ def searchable_visual_queries(visual: str, *, germany: str = "Germany") -> list[
     queries: list[str] = []
     if len(tokens) >= 2:
         short = " ".join(tokens[:4])
-        queries.append(short)
-        queries.append(f"{short} {germany}")
-    if len(tokens) >= 1:
-        queries.append(f"{tokens[0]} {germany}")
+        queries.extend(_with_location(short, germany=germany))
+    elif len(tokens) == 1 and tokens[0].casefold() not in _GEO_ONLY:
+        queries.extend(_with_location(tokens[0], germany=germany))
     # Keep the original last so search still tries it, but short forms run first.
-    if re.search(r"[A-Za-z]{3,}", text):
-        queries.append(text)
-        queries.append(f"{text} {germany}")
-    return list(dict.fromkeys(item for item in queries if item.strip()))
+    if re.search(r"[A-Za-z]{3,}", text) and not _is_weak_search_query(text):
+        queries.extend(_with_location(text, germany=germany))
+    return list(dict.fromkeys(item for item in queries if item.strip() and not _is_weak_search_query(item)))
+
+
+def topic_synonym_queries(title: str, summary: str, visual: str = "") -> list[str]:
+    """Produce short English synonym queries for common news visual subjects."""
+
+    blob = f"{title} {summary} {visual}".casefold()
+    keys = {token.casefold() for token in _tokenize(f"{title} {summary} {visual}")}
+    out: list[str] = []
+    auto_keys = {
+        "auto",
+        "car",
+        "cars",
+        "factory",
+        "fahrzeug",
+        "industrie",
+        "automotive",
+        "hybrid",
+        "hybride",
+        "verbrenner",
+        "autoindustrie",
+        "autokonzern",
+        "autokonzernen",
+        "volkswagen",
+        "bmw",
+        "mercedes",
+    }
+    if keys & auto_keys or "autoindustrie" in blob:
+        out.extend(
+            [
+                "German automotive factory",
+                "Volkswagen production line",
+                "German car manufacturing workers",
+                "Car assembly plant Germany",
+                "car factory Germany",
+                "automobile factory Germany",
+                "car assembly line Germany",
+                "automotive manufacturing plant",
+            ]
+        )
+    if keys & {"document", "legal", "law", "contract", "pen", "note", "calculator", "paperwork"}:
+        out.extend(
+            [
+                "calculator paperwork desk",
+                "financial planning documents desk",
+                "euro coins calculator Germany",
+            ]
+        )
+    if keys & {"pension", "riester", "retire", "retirement", "vorsorge"} or any(
+        hint in blob for hint in ("riester", "altersvorsorge", "pension")
+    ):
+        out.extend(
+            [
+                "retirement savings Germany",
+                "pension documents Germany",
+            ]
+        )
+    if keys & {"family", "everyday", "community", "home", "people", "elderly", "kindergeld"}:
+        out.extend(
+            [
+                "everyday life Germany city street",
+                "Berlin residential street photograph",
+                "family benefits office Germany",
+            ]
+        )
+    if keys & {"parliament", "bundesrat", "bundestag", "government", "reichstag"}:
+        out.extend(
+            [
+                "German parliament Berlin",
+                "Bundesrat building Berlin",
+                "Reichstag Berlin exterior",
+            ]
+        )
+    return list(dict.fromkeys(item for item in out if not _is_weak_search_query(item)))
 
 
 def relaxed_relevance_terms(strict_terms: Sequence[str], queries: Sequence[str]) -> list[str]:
@@ -291,7 +394,7 @@ def relaxed_relevance_terms(strict_terms: Sequence[str], queries: Sequence[str])
 
     Drops modifier noise from the strict list, then keeps tokens from the most
     specific (early) queries. Returns [] when no meaningful scene terms remain
-    so callers fail closed instead of accepting unrelated licensed photos.
+    so callers fail closed instead of accepting unrelated photos.
     """
 
     strict = [str(term) for term in strict_terms if str(term).strip()]
@@ -379,12 +482,11 @@ def search_openverse(
     transport: Transport | None = None,
     log: SearchLog | None = None,
 ) -> list[PhotoCandidate]:
-    """Discover CC0 / BY / BY-SA / public-domain photographs via Openverse."""
+    """Discover photographs via Openverse. License filters are not applied."""
 
     params = {
         "q": query,
         "page_size": str(page_size),
-        "license": "cc0,by,by-sa,pdm",
         "mature": "false",
     }
     url = OPENVERSE_API + "?" + urllib.parse.urlencode(params)
@@ -396,42 +498,44 @@ def search_openverse(
             log.add(action="search_openverse_failed", query=query, error=str(exc))
         return []
     found: list[PhotoCandidate] = []
+    discovered = 0
     for item in payload.get("results") or []:
         if not isinstance(item, dict):
             continue
+        discovered += 1
         license_name = normalize_openverse_license(item.get("license"), item.get("license_version"))
         download = str(item.get("url") or "").strip()
-        source = str(item.get("foreign_landing_url") or item.get("detail_url") or "").strip()
+        source = str(item.get("foreign_landing_url") or item.get("detail_url") or item.get("url") or "").strip()
         author = str(item.get("creator") or "").strip()
         license_url = str(item.get("license_url") or "").strip()
-        evidence = license_evidence_problems(
-            license_name=license_name,
-            license_url=license_url,
-            source_url=source,
-            author=author,
-        )
-        if evidence:
+        width = int(item["width"]) if item.get("width") else None
+        height = int(item["height"]) if item.get("height") else None
+        quality = quality_problems(width=width, height=height)
+        if quality:
             if log is not None:
                 log.add(
-                    action="reject_license",
+                    action="reject_quality",
                     query=query,
                     title=item.get("title"),
-                    license=license_name,
-                    reason="; ".join(evidence),
+                    reason="; ".join(quality),
+                    width=width,
+                    height=height,
                 )
             continue
         if not download:
+            if log is not None:
+                log.add(action="reject_missing_download", query=query, title=item.get("title"))
             continue
         found.append(
             PhotoCandidate(
                 title=str(item.get("title") or ""),
                 download_url=download,
-                source_page=source,
+                source_page=source or download,
                 author=author,
                 license_name=license_name,
                 license_url=license_url,
-                width=int(item["width"]) if item.get("width") else None,
-                height=int(item["height"]) if item.get("height") else None,
+                width=width,
+                height=height,
                 provider=str(item.get("provider") or item.get("source") or "openverse"),
                 attribution=str(item.get("attribution") or ""),
                 tags=_openverse_tags(item),
@@ -439,7 +543,12 @@ def search_openverse(
             )
         )
     if log is not None:
-        log.add(action="search_openverse", query=query, accepted=len(found))
+        log.add(
+            action="search_openverse",
+            query=query,
+            discovered=discovered,
+            accepted=len(found),
+        )
     return found
 
 
@@ -473,59 +582,69 @@ def search_commons(
         return []
     pages = (payload.get("query") or {}).get("pages") or {}
     found: list[PhotoCandidate] = []
+    discovered = 0
     for page in pages.values():
         info = (page.get("imageinfo") or [{}])[0]
         mime = str(info.get("mime") or "")
         if not mime.startswith("image/"):
             continue
+        discovered += 1
         meta = info.get("extmetadata") or {}
         license_name = str((meta.get("LicenseShortName") or {}).get("value") or "")
-        restrictions = str((meta.get("Restrictions") or {}).get("value") or "")
         artist_html = str((meta.get("Artist") or {}).get("value") or "")
         author = re.sub(r"<[^>]+>", "", artist_html).strip()
         license_url = str((meta.get("LicenseUrl") or {}).get("value") or "")
         download = str(info.get("thumburl") or info.get("url") or "").strip()
-        source = "https://commons.wikimedia.org/wiki/" + urllib.parse.quote(str(page.get("title") or "").replace(" ", "_"))
-        description = re.sub(r"<[^>]+>", "", str((meta.get("ImageDescription") or {}).get("value") or "")).strip()
+        source = "https://commons.wikimedia.org/wiki/" + urllib.parse.quote(
+            str(page.get("title") or "").replace(" ", "_")
+        )
+        description = re.sub(
+            r"<[^>]+>", "", str((meta.get("ImageDescription") or {}).get("value") or "")
+        ).strip()
         categories = str((meta.get("Categories") or {}).get("value") or "")
         tags = [part.strip() for part in categories.split("|") if part.strip()][:24]
-        evidence = license_evidence_problems(
-            license_name=license_name,
-            license_url=license_url,
-            source_url=source,
-            author=author,
-            restrictions=restrictions or None,
-        )
-        if evidence:
+        width = int(info["thumbwidth"]) if info.get("thumbwidth") else info.get("width")
+        height = int(info["thumbheight"]) if info.get("thumbheight") else info.get("height")
+        quality = quality_problems(width=width, height=height)
+        if quality:
             if log is not None:
                 log.add(
-                    action="reject_license",
+                    action="reject_quality",
                     query=query,
                     title=page.get("title"),
-                    license=license_name,
-                    reason="; ".join(evidence),
+                    reason="; ".join(quality),
+                    width=width,
+                    height=height,
                 )
             continue
         if not download:
+            if log is not None:
+                log.add(action="reject_missing_download", query=query, title=page.get("title"))
             continue
+        attribution = " / ".join(part for part in (author, license_name) if part) or ""
         found.append(
             PhotoCandidate(
                 title=str(page.get("title") or ""),
                 download_url=download,
-                source_page=source,
+                source_page=source or download,
                 author=author,
                 license_name=license_name,
                 license_url=license_url,
-                width=int(info["thumbwidth"]) if info.get("thumbwidth") else info.get("width"),
-                height=int(info["thumbheight"]) if info.get("thumbheight") else info.get("height"),
+                width=width,
+                height=height,
                 provider="wikimedia_commons",
-                attribution=f"{author} / {license_name}",
+                attribution=attribution,
                 tags=tags,
                 description=description,
             )
         )
     if log is not None:
-        log.add(action="search_commons", query=query, accepted=len(found))
+        log.add(
+            action="search_commons",
+            query=query,
+            discovered=discovered,
+            accepted=len(found),
+        )
     return found
 
 
@@ -608,7 +727,7 @@ def validate_image_file(path: Path, *, min_width: int = 640, min_height: int = 4
 
 
 def require_photographic_assets(assets: list[dict[str, Any]], *, expected_scenes: int = 4) -> list[str]:
-    """Return problems if any scene lacks a usable local photograph + license metadata."""
+    """Return problems if any scene lacks a usable local photograph file."""
 
     problems: list[str] = []
     if expected_scenes < 1:
@@ -626,22 +745,14 @@ def require_photographic_assets(assets: list[dict[str, Any]], *, expected_scenes
             validate_image_file(path)
         except PhotoError as exc:
             problems.append(f"scene {index + 1}: {exc}")
-        evidence = license_evidence_problems(
-            license_name=str(asset.get("license_name") or ""),
-            license_url=str(asset.get("license_url") or ""),
-            source_url=str(asset.get("source_url") or ""),
-            author=str(asset.get("author") or ""),
-        )
-        for item in evidence:
-            problems.append(f"scene {index + 1}: {item}")
         license_name = str(asset.get("license_name") or "").strip().casefold()
         if license_name in {"original-graphic", "remotion-graphic", "silent-fixture"}:
             problems.append(f"scene {index + 1}: graphic placeholder is not a photograph")
     return problems
 
 
-def _candidate_priority(item: PhotoCandidate, *, relevance: int = 0) -> tuple[int, int, int]:
-    """Prefer relevant metadata matches, then reliable download hosts, then resolution."""
+def _candidate_priority(item: PhotoCandidate, *, relevance: int = 0) -> tuple[int, int, int, int]:
+    """Prefer relevance, portrait-friendly aspect, reliable hosts, then resolution."""
 
     host = urllib.parse.urlparse(item.download_url).netloc.casefold()
     if "staticflickr.com" in host or "live.staticflickr.com" in host:
@@ -649,10 +760,19 @@ def _candidate_priority(item: PhotoCandidate, *, relevance: int = 0) -> tuple[in
     elif "images.unsplash.com" in host or "images.pexels.com" in host:
         host_rank = 1
     elif "upload.wikimedia.org" in host:
-        host_rank = 5
+        host_rank = 2
     else:
         host_rank = 3
-    return (-relevance, host_rank, -(item.width or 0))
+    width = int(item.width or 0)
+    height = int(item.height or 0)
+    if height and width and height >= width:
+        aspect_rank = 0
+    elif height and width:
+        aspect_rank = 2
+    else:
+        aspect_rank = 1
+    pixels = width * height
+    return (-relevance, aspect_rank, host_rank, -pixels)
 
 
 def _iter_candidates(
@@ -672,6 +792,13 @@ def _iter_candidates(
     scored: list[tuple[PhotoCandidate, int]] = []
     for item in candidates:
         if item.download_url in used_urls or item.source_page in used_urls:
+            if log is not None:
+                log.add(
+                    action="reject_duplicate",
+                    scene=scene_number,
+                    url=item.download_url,
+                    source=item.source_page,
+                )
             continue
         score = candidate_relevance_score(item, terms)
         if score < 1:
@@ -698,12 +825,13 @@ def collect_scene_photos(
     transport: Transport | None = None,
     prefer_openverse: bool = True,
     relevance_terms: list[list[str]] | None = None,
+    log: SearchLog | None = None,
 ) -> tuple[list[PhotoAsset], SearchLog]:
-    """Search and download one licensed photograph per scene query list."""
+    """Search and download one relevant photograph per scene query list."""
 
     if not scene_queries:
         raise PhotoError("scene_queries is empty; storyboard must define scenes")
-    log = SearchLog()
+    log = log or SearchLog()
     destination_dir.mkdir(parents=True, exist_ok=True)
     assets: list[PhotoAsset] = []
     used: set[str] = set()
@@ -714,10 +842,14 @@ def collect_scene_photos(
         for query in queries:
             if prefer_openverse:
                 pools.extend(search_openverse(query, transport=transport, log=log))
-            # Commons search is optional; 429s are logged and skipped.
             pools.extend(search_commons(query, transport=transport, log=log))
-        # Relevance uses the earliest (scene-specific) queries, not durable
-        # institutional fallbacks appended for search coverage.
+        log.add(
+            action="scene_pool",
+            scene=scene_index + 1,
+            queries=queries,
+            discovered=len(pools),
+            unique_urls=len({item.download_url for item in pools}),
+        )
         default_terms = relevance_terms_from_queries(queries[:3] if len(queries) > 3 else queries)
         terms = (
             relevance_terms[scene_index]
@@ -726,11 +858,11 @@ def collect_scene_photos(
         )
         chosen_asset: PhotoAsset | None = None
         last_error: Exception | None = None
-        # Prefer strict relevance. One relaxed pass may drop modifier noise, but
-        # relevance stays mandatory: never accept a licensed-but-unrelated photo.
+        # Relevance stays mandatory: never accept an unrelated image just to fill a slot.
         if not terms:
+            log.add(action="scene_failed", scene=scene_index + 1, reason="empty_relevance", queries=queries)
             raise PhotoError(
-                f"no downloadable licensed photograph for scene {scene_index + 1}; "
+                f"no relevant photograph for scene {scene_index + 1}; "
                 f"relevance terms are empty; queries={queries}"
             )
         relaxed = relaxed_relevance_terms(terms, queries)
@@ -756,6 +888,14 @@ def collect_scene_photos(
                 log=log,
                 scene_number=scene_index + 1,
             ):
+                if chosen.download_url in used or chosen.source_page in used:
+                    log.add(
+                        action="reject_duplicate",
+                        scene=scene_index + 1,
+                        url=chosen.download_url,
+                        source=chosen.source_page,
+                    )
+                    continue
                 ext = ".jpg"
                 lower = chosen.download_url.casefold()
                 if ".png" in lower:
@@ -764,31 +904,24 @@ def collect_scene_photos(
                     ext = ".webp"
                 path = destination_dir / f"scene-{scene_index + 1:02d}{ext}"
                 try:
-                    evidence = license_evidence_problems(
-                        license_name=chosen.license_name,
-                        license_url=chosen.license_url,
-                        source_url=chosen.source_page,
-                        author=chosen.author,
-                    )
-                    if evidence:
-                        raise PhotoError("; ".join(evidence))
                     download_image(chosen.download_url, path, transport=transport, log=log, retries=3)
                     meta = validate_image_file(path)
                 except PhotoError as exc:
                     last_error = exc
-                    if log is not None:
-                        log.add(
-                            action="candidate_failed",
-                            scene=scene_index + 1,
-                            url=chosen.download_url,
-                            error=str(exc),
-                        )
+                    log.add(
+                        action="download_failed",
+                        scene=scene_index + 1,
+                        url=chosen.download_url,
+                        error=str(exc),
+                    )
                     continue
-                attribution = chosen.attribution or f"{chosen.author} / {chosen.license_name}"
+                attribution = chosen.attribution or " / ".join(
+                    part for part in (chosen.author, chosen.license_name) if part
+                )
                 chosen_asset = PhotoAsset(
                     scene_index=scene_index,
                     path=str(path.resolve()),
-                    source_url=chosen.source_page,
+                    source_url=chosen.source_page or chosen.download_url,
                     download_url=chosen.download_url,
                     author=chosen.author,
                     license_name=chosen.license_name,
@@ -801,21 +934,32 @@ def collect_scene_photos(
                     provider=chosen.provider,
                 )
                 used.add(chosen.download_url)
-                used.add(chosen.source_page)
+                if chosen.source_page:
+                    used.add(chosen.source_page)
                 log.add(
                     action="assigned",
                     scene=scene_index + 1,
                     path=chosen_asset.path,
                     source=chosen_asset.source_url,
-                    license=chosen_asset.license_name,
+                    title=chosen_asset.title,
+                    provider=chosen_asset.provider,
+                    width=chosen_asset.width,
+                    height=chosen_asset.height,
                     relevance=candidate_relevance_score(chosen, active_terms),
                     relaxed=pass_index > 0,
                 )
                 break
         if chosen_asset is None:
+            log.add(
+                action="scene_failed",
+                scene=scene_index + 1,
+                queries=queries,
+                discovered=len(pools),
+                last_error=str(last_error) if last_error else None,
+            )
             raise PhotoError(
-                f"no downloadable licensed photograph for scene {scene_index + 1}; "
-                f"queries={queries}; last_error={last_error}"
+                f"no relevant photograph for scene {scene_index + 1}; "
+                f"queries={queries}; discovered={len(pools)}; last_error={last_error}"
             )
         assets.append(chosen_asset)
     return assets, log
@@ -824,7 +968,10 @@ def collect_scene_photos(
 def write_attribution_manifest(assets: list[PhotoAsset], path: Path, *, reel_id: str) -> Path:
     payload = {
         "reel_id": reel_id,
-        "note": "Only photographs with verified reusable licenses are listed. An estimate is not a rights clearance opinion.",
+        "note": (
+            "Scene photographs selected for visual relevance. License/author fields are "
+            "optional metadata when the provider supplied them; they are not a clearance opinion."
+        ),
         "assets": [
             {
                 "scene_index": asset.scene_index,
@@ -982,66 +1129,20 @@ def build_scene_photo_queries(
         # Short searchable English phrases first — long art-direction lines often hit 0 results.
         if visual and not graphic_like:
             scene_queries.extend(searchable_visual_queries(visual, germany=germany))
-        folded_visual = visual.casefold()
-        folded_topic = f"{candidate_title} {candidate_summary}".casefold()
-        visual_keys = {token.casefold() for token in _tokenize(visual)}
-        topic_keys = {token.casefold() for token in _tokenize(f"{candidate_title} {candidate_summary}")}
-        auto_keys = {
-            "auto",
-            "car",
-            "cars",
-            "factory",
-            "fahrzeug",
-            "industrie",
-            "automotive",
-            "hybrid",
-            "hybride",
-            "verbrenner",
-            "autoindustrie",
-            "autokonzern",
-            "autokonzernen",
-        }
-        if visual_keys & auto_keys or topic_keys & auto_keys or "autoindustrie" in folded_topic:
-            scene_queries.extend(
-                [
-                    "car factory Germany",
-                    "automobile factory Germany",
-                    "car assembly line Germany",
-                    "automotive manufacturing plant",
-                ]
-            )
-        if visual_keys & {"document", "legal", "law", "contract", "pen", "note", "calculator", "paperwork"}:
-            scene_queries.extend(
-                [
-                    "calculator paperwork desk",
-                    "financial planning documents desk",
-                    "euro coins calculator Germany",
-                ]
-            )
-        if visual_keys & {"pension", "riester", "retire", "retirement", "vorsorge"} or any(
-            hint in folded_topic for hint in ("riester", "altersvorsorge", "pension")
-        ):
-            scene_queries.extend(
-                [
-                    "retirement savings Germany",
-                    "pension documents Germany",
-                ]
-            )
-        if visual_keys & {"family", "everyday", "community", "home", "people", "elderly"}:
-            scene_queries.extend(
-                [
-                    "everyday life Germany city street",
-                    "Berlin residential street photograph",
-                ]
-            )
+        scene_queries.extend(
+            topic_synonym_queries(candidate_title, candidate_summary, visual if not graphic_like else "")
+        )
         # English topic leftovers from the title/summary (skip German-only token soup).
-        english_topic = " ".join(
+        english_tokens = [
             token
             for token in (title_tokens + summary_tokens + fact_tokens)
-            if re.fullmatch(r"[A-Za-z][A-Za-z-]{2,}", token or "")
-        )
-        if english_topic:
-            scene_queries.append(f"{english_topic} {germany}")
+            if re.fullmatch(r"[A-Za-z][A-Za-z-]{2,}", token or "") and token.casefold() not in _GEO_ONLY
+        ]
+        if len(english_tokens) >= 2:
+            english_topic = " ".join(english_tokens[:5])
+            scene_queries.extend(_with_location(english_topic, germany=germany))
+        elif len(english_tokens) == 1:
+            scene_queries.extend(_with_location(english_tokens[0], germany=germany))
         # Durable institutional English fallbacks last (search coverage only).
         scene_queries.extend(
             [
@@ -1051,7 +1152,11 @@ def build_scene_photo_queries(
                 "euro banknotes Germany",
             ]
         )
-        ordered = list(dict.fromkeys(item for item in scene_queries if item.strip()))
+        ordered = [
+            item
+            for item in dict.fromkeys(item for item in scene_queries if item.strip())
+            if not _is_weak_search_query(item)
+        ]
         if not ordered:
             raise PhotoError(f"scene {index + 1} produced no photo search queries")
         queries.append(ordered[:8])
@@ -1091,13 +1196,6 @@ def retrieve_licensed_photos_for_script(
         raise PhotoError("one or more scenes lack relevance terms for photograph selection")
     destination_dir = Path(destination_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
-    photos, log = collect_scene_photos(
-        queries,
-        destination_dir,
-        transport=transport,
-        relevance_terms=relevance,
-    )
-    log.write(destination_dir / "image_search_log.json")
     (destination_dir / "photo_queries.json").write_text(
         json.dumps(
             {"queries": queries, "relevance_terms": relevance, "title": candidate_title, "scenes": len(scenes)},
@@ -1107,6 +1205,19 @@ def retrieve_licensed_photos_for_script(
         + "\n",
         encoding="utf-8",
     )
+    log = SearchLog()
+    try:
+        photos, log = collect_scene_photos(
+            queries,
+            destination_dir,
+            transport=transport,
+            relevance_terms=relevance,
+            log=log,
+        )
+    except PhotoError:
+        log.write(destination_dir / "image_search_log.json")
+        raise
+    log.write(destination_dir / "image_search_log.json")
     write_attribution_manifest(photos, destination_dir / "attribution_manifest.json", reel_id=reel_id or destination_dir.name)
     assets = assets_for_render(photos)
     problems = require_photographic_assets(assets, expected_scenes=len(scenes))
