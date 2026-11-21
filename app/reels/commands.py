@@ -612,13 +612,18 @@ def find_licensed_assets(
     *,
     config: ReelConfig | None = None,
     transport=None,
+    vision_complete=None,
+    require_vision: bool | None = None,
 ) -> list[dict]:
     """Download visually relevant photographs for every storyboard scene.
 
-    Runs entirely in Python (Openverse + Commons). Raises ``PhotoError`` when a
-    mandatory photograph cannot be retrieved so paid TTS never starts. License
-    metadata is optional. Never returns Remotion graphic placeholders for production.
+    Openverse/Commons discovery is shortlisted by metadata, then a batched vision
+    model scores actual image content. Raises ``PhotoError`` when a mandatory
+    photograph cannot be retrieved so paid TTS never starts. License metadata is
+    optional. Never returns Remotion graphic placeholders for production.
     """
+
+    import os
 
     from app.reels.photos import PhotoError, retrieve_licensed_photos_for_script
 
@@ -627,6 +632,10 @@ def find_licensed_assets(
     event_id = str(package.get("event_id") or script.get("reel_id") or "reel")
     safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in event_id)[:80] or "reel"
     destination = settings.working_directory / "storage" / "generated" / "reels" / "assets" / safe
+    vision_flag = require_vision
+    if vision_flag is None:
+        raw = os.getenv("REEL_PHOTO_VISION", "1").strip().lower()
+        vision_flag = raw not in {"0", "false", "no", "off"}
     try:
         assets = retrieve_licensed_photos_for_script(
             candidate.title,
@@ -635,6 +644,8 @@ def find_licensed_assets(
             destination,
             transport=transport,
             reel_id=safe,
+            vision_complete=vision_complete,
+            require_vision=bool(vision_flag),
         )
     except PhotoError:
         raise

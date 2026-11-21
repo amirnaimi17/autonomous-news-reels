@@ -65,11 +65,23 @@ def rerender_with_photos(
             summary,
             {"story_package": story},
         )
+    import os
+
     relevance = [relevance_terms_from_queries(group) for group in scene_queries]
+    vision_on = os.getenv("REEL_PHOTO_VISION", "1").strip().lower() not in {"0", "false", "no", "off"}
     photos, search_log = collect_scene_photos(
         scene_queries,
         destination / "assets",
         relevance_terms=relevance,
+        story_topic=f"{headline}. {summary}".strip(),
+        scene_briefs=[
+            str(scene.get("visual_prompt") or "")
+            for scene in (story.get("scenes") or [])
+            if isinstance(scene, dict)
+        ],
+        title=headline,
+        summary=summary,
+        require_vision=vision_on,
     )
     search_log.write(destination / "image_search_log.json")
     write_attribution_manifest(photos, destination / "attribution_manifest.json", reel_id=destination.name)
