@@ -132,17 +132,51 @@ def test_irrelevant_stale_and_duplicate_stories_are_recorded(tmp_path) -> None:
     assert results[-1].message == "duplicate"
 
 
+def _licensed_photo_assets(tmp_path, count: int = 4) -> list[dict]:
+    assets = []
+    for index in range(count):
+        path = tmp_path / f"licensed-{index}.jpg"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=0x336699:s=800x600:d=0.1",
+                "-frames:v",
+                "1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        assets.append(
+            {
+                "path": str(path),
+                "source_url": f"https://example.org/photo/{index}",
+                "author": f"Author{index}",
+                "license_name": "CC BY 2.0",
+                "license_url": "https://creativecommons.org/licenses/by/2.0/",
+                "kind": "licensed-photo",
+                "role": "scene",
+            }
+        )
+    return assets
+
+
 def test_paid_generation_stops_at_the_cost_limit(tmp_path) -> None:
     config = _config(tmp_path)
     config = ReelConfig(**{**config.__dict__, "paid_generation": True, "per_reel_max_usd": 0.50})
     store = ReelStore(config.database_path)
     now = datetime(2026, 11, 19, 10, 0, tzinfo=timezone.utc)
     candidate = _candidate("Kindergeld payment date", "https://example.com/kindergeld-date", now)
+    photos = _licensed_photo_assets(tmp_path)
 
     def script(candidate, checked, paid_generation):
         return {"status": "ready", "narration": "خبر", "caption": "خبر", "voice_estimate_usd": 0.80, "storyboard_json": "{}"}
 
-    result = _run(config, store, [candidate], now, write_script=script, find_assets=lambda candidate, script: [{"license_name": "remotion-graphic", "kind": "remotion-graphic"}])
+    result = _run(config, store, [candidate], now, write_script=script, find_assets=lambda candidate, script: photos)
     assert result.status == "rejected"
     assert result.message == "cost limit"
 

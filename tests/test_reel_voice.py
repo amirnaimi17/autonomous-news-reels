@@ -16,6 +16,41 @@ from app.reels.store import ReelStore
 from app.reels.voice import ARAN_VOICE, narrate_persian, prepare_spoken, production_voice_id
 
 
+def _licensed_photos(tmp_path: Path, count: int = 4) -> list[dict]:
+    import subprocess
+
+    assets = []
+    for index in range(count):
+        path = tmp_path / f"voice-photo-{index}.jpg"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=0x336699:s=800x600:d=0.1",
+                "-frames:v",
+                "1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        assets.append(
+            {
+                "path": str(path),
+                "source_url": f"https://example.org/voice/{index}",
+                "author": f"Author{index}",
+                "license_name": "CC BY 2.0",
+                "license_url": "https://creativecommons.org/licenses/by/2.0/",
+                "kind": "licensed-photo",
+                "role": "scene",
+            }
+        )
+    return assets
+
+
 def _config(tmp_path: Path, **overrides) -> ReelConfig:
     base = dict(
         database_path=tmp_path / "reels.sqlite3",
@@ -159,17 +194,7 @@ def test_paid_generation_false_still_blocks_before_voice(tmp_path: Path) -> None
             "storyboard_json": "[]",
             "voice_estimate_usd": 0.01,
         },
-        find_assets=lambda candidate, script: [
-            {
-                "license_name": "remotion-graphic",
-                "kind": "remotion-graphic",
-                "path": "",
-                "source_url": "",
-                "author": "",
-                "license_url": "",
-                "role": "remotion-graphic",
-            }
-        ],
+        find_assets=lambda candidate, script: _licensed_photos(tmp_path),
         narrate=narrate,
         render_video=lambda *a, **k: (_ for _ in ()).throw(AssertionError("video")),
         probe_video=lambda path: (_ for _ in ()).throw(AssertionError("probe")),
@@ -222,17 +247,7 @@ def test_pipeline_with_mocked_voice_stops_before_forcing_live_video(tmp_path: Pa
             "storyboard_json": "[]",
             "voice_estimate_usd": 0.01,
         },
-        find_assets=lambda candidate, script: [
-            {
-                "license_name": "remotion-graphic",
-                "kind": "remotion-graphic",
-                "path": "",
-                "source_url": "",
-                "author": "",
-                "license_url": "",
-                "role": "remotion-graphic",
-            }
-        ],
+        find_assets=lambda candidate, script: _licensed_photos(tmp_path),
         narrate=narrate,
         render_video=lambda script, assets, audio: (_ for _ in ()).throw(RuntimeError("video disabled in this test")),
         probe_video=lambda path: {},

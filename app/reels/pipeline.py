@@ -201,10 +201,66 @@ def run_generation(
         _record_rejected(store, config, candidate, reel_id, fingerprint, retry_count, "inadequately verified", attempt_id, now)
         return StageResult("rejected", "inadequately verified", reel_id)
 
-    assets = find_assets(candidate, script)
+    try:
+        assets = find_assets(candidate, script)
+    except Exception as exc:
+        message = str(exc) or "photograph retrieval failed"
+        _record_failed(
+            store,
+            config,
+            candidate,
+            reel_id,
+            fingerprint,
+            retry_count,
+            message,
+            attempt_id,
+            now,
+            stage="photos",
+            script=script,
+            checked=checked,
+        )
+        return StageResult("failed", message, reel_id)
     if not assets:
-        _record_rejected(store, config, candidate, reel_id, fingerprint, retry_count, "no licensed visual", attempt_id, now)
-        return StageResult("rejected", "no licensed visual", reel_id)
+        message = "no licensed photographs"
+        _record_failed(
+            store,
+            config,
+            candidate,
+            reel_id,
+            fingerprint,
+            retry_count,
+            message,
+            attempt_id,
+            now,
+            stage="photos",
+            script=script,
+            checked=checked,
+        )
+        return StageResult("failed", message, reel_id)
+    # Mandatory photographs: reject graphic placeholders before any paid TTS.
+    graphic_kinds = {"remotion-graphic", "original-graphic", "silent-fixture"}
+    if any(
+        not str(asset.get("path") or "").strip()
+        or str(asset.get("license_name") or "").strip().casefold() in graphic_kinds
+        or str(asset.get("kind") or "").strip().casefold() in graphic_kinds
+        for asset in assets
+    ):
+        message = "mandatory photographs missing"
+        _record_failed(
+            store,
+            config,
+            candidate,
+            reel_id,
+            fingerprint,
+            retry_count,
+            message,
+            attempt_id,
+            now,
+            stage="photos",
+            script=script,
+            checked=checked,
+        )
+        return StageResult("failed", message, reel_id)
     for asset in assets:
         if asset.get("kind") == "paid-image" and not config.paid_generation:
             _record_rejected(store, config, candidate, reel_id, fingerprint, retry_count, "paid image refused", attempt_id, now)
@@ -386,3 +442,42 @@ def _record_rejected(store, config, candidate, reel_id, fingerprint, retry_count
     store.upsert_reel(row)
     store.add_error(reel_id=reel_id, attempt_id=attempt_id, stage="select", message=message, retryable=False, now=now)
     store.finish_attempt(attempt_id, status="rejected", message=message, reel_id=reel_id, now=now)
+
+
+def _record_failed(
+    store,
+    config,
+    candidate,
+    reel_id,
+    fingerprint,
+    retry_count,
+    message,
+    attempt_id,
+    now,
+    *,
+    stage: str,
+    script: dict | None = None,
+    checked: dict | None = None,
+) -> None:
+    """Mark a retryable generation failure (for example missing photographs)."""
+
+    row = _base_row(config, candidate, reel_id, fingerprint, retry_count, checked or {}, now)
+    if script:
+        row["narration_fa"] = str(script.get("narration") or "")
+        row["caption_fa"] = str(script.get("caption") or "")
+        row["editorial_angle"] = str(script.get("angle") or "")
+        row["storyboard_json"] = str(script.get("storyboard_json") or "{}")
+    row["local_status"] = "failed"
+    row["error_message"] = message
+    row["generation_finished_at"] = utc_now(now)
+    store.upsert_reel(row)
+    store.add_source(
+        reel_id,
+        url=candidate.url,
+        publisher=candidate.publisher,
+        title=candidate.title,
+        verified_at=utc_now(now),
+        excerpt=str((checked or {}).get("excerpt") or "")[:1000],
+    )
+    store.add_error(reel_id=reel_id, attempt_id=attempt_id, stage=stage, message=message, retryable=True, now=now)
+    store.finish_attempt(attempt_id, status="failed", message=message, reel_id=reel_id, now=now)

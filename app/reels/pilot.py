@@ -81,6 +81,7 @@ def run_persian_reel_pilot(
     script_complete: Callable[..., Any] | None = None,
     voice_transport: Callable[..., Any] | None = None,
     voice_approved: bool = False,
+    require_live_voice: bool = False,
     render_runner: Callable[..., Any] | None = None,
     database_path: Path | None = None,
     overwrite: bool = False,
@@ -90,6 +91,9 @@ def run_persian_reel_pilot(
 
     Paid providers are never called unless the caller injects a live transport and
     sets ``voice_approved`` for ElevenLabs. Cron and publishing are not touched.
+
+    When ``require_live_voice`` is true, silent fixture audio is refused: the run
+    must use a fixture MP3 path or an approved/mocked ElevenLabs narration.
     """
 
     rid = run_id or new_run_id()
@@ -155,7 +159,11 @@ def run_persian_reel_pilot(
                     run_id=rid,
                     out_dir=str(destination),
                 )
-            shutil.copy2(audio_path, final_audio)
+            source_audio = Path(audio_path).resolve()
+            if source_audio != final_audio.resolve():
+                shutil.copy2(source_audio, final_audio)
+            elif not final_audio.is_file():
+                raise RenderError(f"audio missing: {audio_path}")
             audio_meta = {
                 "path": str(final_audio),
                 "provider": "fixture",
@@ -188,6 +196,11 @@ def run_persian_reel_pilot(
                     narration_path=str(narration_path),
                 )
         else:
+            if require_live_voice:
+                raise RenderError(
+                    "live voice required: refusing silent fixture audio. "
+                    "Pass an approved ElevenLabs narration or a real MP3 fixture."
+                )
             seconds = float(story.get("duration_seconds") or 0) or sum(
                 float(scene.get("duration_seconds") or 0)
                 for scene in story.get("scenes") or []
@@ -259,6 +272,7 @@ def run_persian_reel_pilot(
                 narration=narration,
                 min_seconds=1.0,
                 max_seconds=900.0,
+                require_audible_audio=require_live_voice,
             )
             qa_path.write_text(json.dumps(qa_report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             if not qa_report.get("technical_pass"):

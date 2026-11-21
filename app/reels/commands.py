@@ -87,7 +87,7 @@ def generate_reel_command(*, scheduled: bool, target: str, now: datetime | None 
             candidates=candidates,
             verify_source=verify_http,
             write_script=write_grounded_script,
-            find_assets=find_licensed_assets,
+            find_assets=lambda candidate, script: find_licensed_assets(candidate, script, config=config),
             narrate=narrate_aran,
             render_video=render_with_remotion,
             probe_video=probe_mp4,
@@ -400,21 +400,44 @@ def write_grounded_script(
     return result
 
 
-def find_licensed_assets(candidate: Candidate, script: dict) -> list[dict]:
-    """Graphics are allowed. A paid image is not invented here."""
+def find_licensed_assets(
+    candidate: Candidate,
+    script: dict,
+    *,
+    config: ReelConfig | None = None,
+    transport=None,
+) -> list[dict]:
+    """Download real licensed photographs for every storyboard scene.
 
-    del candidate, script
-    return [
-        {
-            "path": "",
-            "source_url": "",
-            "author": "",
-            "license_name": "remotion-graphic",
-            "license_url": "",
-            "role": "remotion-graphic",
-            "kind": "remotion-graphic",
-        }
-    ]
+    Runs entirely in Python (Openverse + Commons). Raises ``PhotoError`` when a
+    mandatory photograph cannot be retrieved so paid TTS never starts. Never
+    returns Remotion graphic placeholders for production.
+    """
+
+    from app.reels.photos import PhotoError, retrieve_licensed_photos_for_script
+
+    settings = config or load_reel_config()
+    package = script.get("story_package") if isinstance(script.get("story_package"), dict) else {}
+    event_id = str(package.get("event_id") or script.get("reel_id") or "reel")
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in event_id)[:80] or "reel"
+    destination = settings.working_directory / "storage" / "generated" / "reels" / "assets" / safe
+    try:
+        assets = retrieve_licensed_photos_for_script(
+            candidate.title,
+            candidate.summary,
+            script,
+            destination,
+            transport=transport,
+            reel_id=safe,
+        )
+    except PhotoError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - surface as PhotoError for the pipeline gate
+        raise PhotoError(f"photograph retrieval failed: {exc}") from exc
+    for asset in assets:
+        asset.setdefault("kind", "licensed-photo")
+        asset.setdefault("role", "scene")
+    return assets
 
 
 def narrate_aran(
@@ -597,6 +620,50 @@ def probe_mp4(path: Path) -> dict:
     from app.reels.render import probe_media
 
     return probe_media(Path(path))
+
+
+def run_live_persian_pilot_command(
+    *,
+    fact_pack: Path,
+    editorial_review: Path,
+    out_dir: Path | None = None,
+    assets_json: Path | None = None,
+    database_path: Path | None = None,
+    approve_paid: bool = False,
+    estimate_only: bool = False,
+    planned_narration_chars: int = 520,
+) -> int:
+    """Phase 7 controlled live pilot. Defaults to estimate-only; never enables Cron."""
+
+    from app.reels.live_pilot import run_live_persian_reel
+
+    if not Path(fact_pack).is_file():
+        print(f"fact pack missing: {fact_pack}", flush=True)
+        return 1
+    if not Path(editorial_review).is_file():
+        print(f"editorial review missing: {editorial_review}", flush=True)
+        return 1
+    # Load .env into the process for this controlled run only (keys never printed).
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(override=False)
+    except Exception:
+        pass
+    result = run_live_persian_reel(
+        fact_pack=Path(fact_pack),
+        editorial_review=Path(editorial_review),
+        out_dir=out_dir,
+        assets_json=Path(assets_json) if assets_json is not None else None,
+        approve_paid=approve_paid,
+        estimate_only=estimate_only,
+        database_path=Path(database_path) if database_path is not None else None,
+        planned_narration_chars=planned_narration_chars,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if result.get("status") in {"qa_passed", "awaiting_approval", "estimate_only"}:
+        return 0
+    return 1
 
 
 def run_persian_pilot_command(

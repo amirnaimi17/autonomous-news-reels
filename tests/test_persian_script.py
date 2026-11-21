@@ -25,6 +25,41 @@ from app.services.llm.persian_script import (
 SOURCE_URL = "https://example.com/kindergeld-2026"
 
 
+def _licensed_photos(tmp_path: Path, count: int = 4) -> list[dict]:
+    import subprocess
+
+    assets = []
+    for index in range(count):
+        path = tmp_path / f"script-photo-{index}.jpg"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=0x336699:s=800x600:d=0.1",
+                "-frames:v",
+                "1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        assets.append(
+            {
+                "path": str(path),
+                "source_url": f"https://example.org/script/{index}",
+                "author": f"Author{index}",
+                "license_name": "CC BY 2.0",
+                "license_url": "https://creativecommons.org/licenses/by/2.0/",
+                "kind": "licensed-photo",
+                "role": "scene",
+            }
+        )
+    return assets
+
+
 def _candidate(now: datetime) -> Candidate:
     return Candidate(
         title="Kindergeld rises to 259 euro in 2026",
@@ -250,9 +285,7 @@ def test_pipeline_stores_script_then_blocks_voice_without_paid_generation(tmp_pa
         candidates=[candidate],
         verify_source=lambda item: {"ok": True, "excerpt": item.summary},
         write_script=write_script,
-        find_assets=lambda candidate, script: [
-            {"license_name": "remotion-graphic", "kind": "remotion-graphic", "path": "", "source_url": "", "author": "", "license_url": "", "role": "remotion-graphic"}
-        ],
+        find_assets=lambda candidate, script: _licensed_photos(tmp_path),
         narrate=lambda text, voice_id: (_ for _ in ()).throw(AssertionError("ElevenLabs must not run")),
         render_video=lambda script, assets, audio: (_ for _ in ()).throw(AssertionError("video must not run")),
         probe_video=lambda path: (_ for _ in ()).throw(AssertionError("probe must not run")),
