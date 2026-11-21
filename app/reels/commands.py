@@ -128,9 +128,7 @@ def rank_news_command(
         f"(profile_default={prepared['profile'].min_score})"
     )
 
-    if settings.editorial_rank_provider != "openai" and complete is None:
-        print("rejected: set REEL_EDITORIAL_RANK_PROVIDER=openai to rank with AI")
-        return 0
+    # rank-news always targets the OpenAI editorial ranker; live calls still need --approve.
     if not approved and complete is None:
         print("rejected: editorial ranking not approved (pass --approve or set REEL_EDITORIAL_RANK_APPROVED=true)")
         print("no OpenAI call was made")

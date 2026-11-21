@@ -508,7 +508,7 @@ def test_rank_news_cli_prints_top_three_without_media(tmp_path: Path, monkeypatc
     from app.cli import main
     from app.reels.commands import rank_news_command
 
-    config = _config(tmp_path, editorial_rank_provider="openai", editorial_rank_approved=False)
+    config = _config(tmp_path, editorial_rank_provider="off", editorial_rank_approved=False)
     now = datetime(2026, 11, 21, 10, 0, tzinfo=timezone.utc)
     candidates = [
         _candidate(
