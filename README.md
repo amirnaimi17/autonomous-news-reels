@@ -11,8 +11,8 @@ A standalone Python application that discovers recent news, chooses distinct sto
 | 3 | Script-writing agent | Persian grounded scripts via `write_grounded_script`. Pilot fact-pack / editorial / `story_package.json` contracts are reused. OpenAI chat is optional and mockable; extractive English fallback remains for the older `ScriptRequest` path. |
 | 4 | Image and voice agents | Persian TTS via ElevenLabs Aran is wired through the existing `persian-tts` client (`narrate_aran`). Live HTTP requires explicit opt-in. Image generation is still later. |
 | 5 | FFmpeg / Remotion reel render | Remotion `DataReel` render path is wired (`render-reel` CLI + `render_with_remotion`). Validates 1080×1920 H.264/AAC with ffprobe. |
-| 6 | Telegram, scheduler, restart recovery of a live run | Not started. The database locks and slot heartbeat exist. |
-| 7 | End-to-end runs and deployment verification | Not started |
+| 6 | End-to-end Persian Reel pilot | Controlled `run-persian-pilot` workflow: story → Aran/fixture MP3 → Remotion → technical QA + contact sheet. Offline fixtures + mocked OpenAI/ElevenLabs tests. No Cron, no Instagram publish. |
+| 7 | Telegram, scheduler, restart recovery of a live run | Not started. The database locks and slot heartbeat exist. |
 
 ## Run it
 
@@ -95,7 +95,22 @@ Optional `--asset path.jpg` (repeatable) supplies photographs in scene order. Wi
 
 `INSTAGRAM_PUBLISH_ENABLED` must stay `false`. Setting it to `true` stops the process, because no publisher is installed.
 
-`python main.py scheduler` does not exist yet. The systemd unit in `deploy/news-reels.service` is a template for Phase 6.
+### Phase 6 end-to-end Persian pilot
+
+One controlled story through script → audio → Remotion → QA, writing into an isolated `storage/generated/pilot/<run-id>/` directory (never overwrites existing Reels unless `--overwrite`):
+
+```bash
+.venv/bin/python -m app.cli run-persian-pilot \
+  --story-package tests/fixtures/reel_pilot/story_package.json \
+  --audio tests/fixtures/reel_pilot/narration.mp3 \
+  --asset tests/fixtures/reel_pilot/scene-01.png \
+  --out-dir storage/generated/pilot/phase6-offline \
+  --database-path /tmp/phase6-pilot.sqlite3
+```
+
+Pass a local `--audio` MP3 to stay offline (no ElevenLabs). Optional `--database-path` uses a temporary Reel SQLite file. `--skip-render` stages story + narration only. Cron and Instagram publishing stay disabled.
+
+`python main.py scheduler` does not exist yet. The systemd unit in `deploy/news-reels.service` is a template for a later scheduler phase.
 
 ## What Phase 1 already enforces
 

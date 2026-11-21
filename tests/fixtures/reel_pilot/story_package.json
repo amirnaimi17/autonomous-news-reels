@@ -1,0 +1,53 @@
+{
+  "schema_version": "pilot-1",
+  "demo": true,
+  "event_id": "phase6-e2e-fixture",
+  "language": "fa-IR",
+  "audience": "Developers testing Remotion render",
+  "headline": "آزمون یکپارچه پایلوت فارسی",
+  "source_urls": [
+    "https://example.org/demo-render"
+  ],
+  "claims": [
+    {
+      "text": "This is a synthetic Persian render fixture, not a news event.",
+      "source_urls": [
+        "https://example.org/demo-render"
+      ]
+    }
+  ],
+  "duration_seconds": 8,
+  "scenes": [
+    {
+      "number": 1,
+      "duration_seconds": 2,
+      "narration": "این یک آزمون رندر است، نه خبر واقعی.",
+      "on_screen_text": "آزمون رندر\nنه خبر واقعی",
+      "visual_prompt": "Navy graphic opener"
+    },
+    {
+      "number": 2,
+      "duration_seconds": 2,
+      "narration": "متن فارسی باید راست‌چین و خوانا باشد.",
+      "on_screen_text": "متن راست‌چین",
+      "visual_prompt": "Typography plate"
+    },
+    {
+      "number": 3,
+      "duration_seconds": 2,
+      "narration": "صدا و تصویر با هم هماهنگ می‌شوند.",
+      "on_screen_text": "هماهنگی صدا و تصویر",
+      "visual_prompt": "Sync graphic"
+    },
+    {
+      "number": 4,
+      "duration_seconds": 2,
+      "narration": "پایان آزمون رندر محلی.",
+      "on_screen_text": "پایان آزمون",
+      "visual_prompt": "Closing graphic"
+    }
+  ],
+  "disclaimers": [
+    "Synthetic Phase 6 offline fixture. Never publish."
+  ]
+}
