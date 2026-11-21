@@ -8,7 +8,7 @@ A standalone Python application that discovers recent news, chooses distinct sto
 | --- | --- | --- |
 | 1 | Structure, configuration, database, quota, provider ports | Implemented |
 | 2 | News research, selection, 72-hour rule, duplicate clustering | Implemented. Selection does not start production. |
-| 3 | Script-writing agent | Not started. An extractive fallback that only copies source sentences is available. |
+| 3 | Script-writing agent | Persian grounded scripts via `write_grounded_script`. Pilot fact-pack / editorial / `story_package.json` contracts are reused. OpenAI chat is optional and mockable; extractive English fallback remains for the older `ScriptRequest` path. |
 | 4 | Image and voice agents | Not started. Solid-color frames and silent WAV files exist as offline stand-ins. |
 | 5 | FFmpeg reel render and file validation | Not started. Encoder selection and the acceptance rules exist. |
 | 6 | Telegram, scheduler, restart recovery of a live run | Not started. The database locks and slot heartbeat exist. |
@@ -34,6 +34,20 @@ NEWS_SOURCES_FILE=config/news_sources.json .venv/bin/python main.py discover
 Each source object needs `name`, `url`, and `language` (`en`, `de`, or another 2–3 letter code). `STOPWORDS_DIR` defaults to `config/stopwords` and is resolved from the current directory. `ENTITY_ALIASES_FILE` is optional. `TRANSLATION_PROVIDER` accepts only `none`.
 
 Copy `.env.example` to `.env` before adding tokens. The process reads environment variables and that file. Tokens are never printed by `status`.
+
+### Phase 3 Persian script generation
+
+`generate-reel` can write a grounded Persian `story_package.json` before any voice or video work:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `REEL_SCRIPT_PROVIDER` | `off` | `off` refuses scripts unless a test injects a completer. `openai` builds Chat Completions requests. |
+| `OPENAI_API_KEY` | empty | Required only when `REEL_SCRIPT_PROVIDER=openai`. Never hardcode or commit the value. |
+| `OPENAI_SCRIPT_MODEL` | `gpt-4o-mini` | Chat model for Persian story packages. |
+| `REEL_SCRIPT_OUTPUT_DIR` | `storage/generated/reels/scripts` | Writes `fact_pack.json`, `editorial_review.json`, and `story_package.json` per event. |
+| `REEL_PAID_GENERATION` | `false` | Gates ElevenLabs narration and paid render. Script generation can run with the OpenAI provider while this stays false; the pipeline then stops at `blocked_paid` before voice. |
+
+Unit tests inject a mocked transport and never call OpenAI or ElevenLabs. Keep `REEL_PAID_GENERATION=false` and leave `ELEVENLABS_API_KEY` empty while iterating on scripts.
 
 `INSTAGRAM_PUBLISH_ENABLED` must stay `false`. Setting it to `true` stops the process, because no publisher is installed.
 

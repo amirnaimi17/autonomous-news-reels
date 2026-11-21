@@ -209,6 +209,7 @@ def status_command() -> int:
     store.migrate()
     print(f"database: {config.database_path}")
     print(f"paid generation: {config.paid_generation}")
+    print(f"script provider: {config.script_provider}")
     print(f"hours Europe/Berlin: {', '.join(str(hour) for hour in config.generation_hours)}")
     print("attempts:")
     for row in store.recent_attempts(10):
@@ -296,18 +297,77 @@ def verify_http(candidate: Candidate) -> dict:
     return {"ok": True, "excerpt": body[:400]}
 
 
-def write_grounded_script(candidate: Candidate, checked: dict, *, paid_generation: bool) -> dict:
-    """Refuse a script when paid generation is off.
+def write_grounded_script(
+    candidate: Candidate,
+    checked: dict,
+    *,
+    paid_generation: bool,
+    complete=None,
+    config: ReelConfig | None = None,
+) -> dict:
+    """Write a grounded Persian ``story_package`` for the Reel pipeline.
 
-    A Persian narration of a German or English wire is a paid language step.
-    This function does not invent sentences from the silent/extractive stub.
+    Script generation reuses the pilot fact-pack and editorial contracts. The
+    OpenAI chat call is optional and injectable. Voice and video stay behind
+    ``REEL_PAID_GENERATION`` in ``run_generation``; this function never calls
+    ElevenLabs.
     """
 
-    if not paid_generation:
-        return {"status": "blocked_paid", "message": "paid generation is disabled"}
+    from app.core.exceptions import ConfigurationError, GroundingError
+    from app.services.llm.openai_script import complete_chat
+    from app.services.llm.persian_script import (
+        build_editorial_brief,
+        build_fact_pack,
+        generate_persian_story_package,
+        pipeline_script_from_package,
+        write_story_package,
+    )
+
     if not checked.get("ok"):
         return {"status": "rejected", "message": "inadequately verified"}
-    return {"status": "rejected", "message": "the paid script transport was not configured"}
+
+    settings = config or load_reel_config()
+    provider = (settings.script_provider or "off").strip().lower()
+    completer = complete
+    if completer is None:
+        if provider in {"", "off", "none"}:
+            if not paid_generation:
+                return {"status": "blocked_paid", "message": "paid generation is disabled"}
+            return {"status": "rejected", "message": "the paid script transport was not configured"}
+        if provider != "openai":
+            return {"status": "rejected", "message": f"unknown script provider: {provider}"}
+
+        def completer(prompt: str, context: dict) -> dict:
+            return complete_chat(prompt, context, model=settings.script_model)
+
+    fact_pack = build_fact_pack(
+        title=candidate.title,
+        summary=candidate.summary,
+        url=candidate.url,
+        publisher=candidate.publisher,
+        published_at=candidate.published_at,
+        excerpt=str(checked.get("excerpt") or ""),
+    )
+    editorial = build_editorial_brief(
+        fact_pack,
+        title=candidate.title,
+        summary=candidate.summary,
+    )
+    try:
+        package = generate_persian_story_package(fact_pack, editorial, complete=completer)
+    except ConfigurationError as exc:
+        return {"status": "blocked_paid" if not paid_generation else "rejected", "message": str(exc)}
+    except (GroundingError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        return {"status": "rejected", "message": str(exc) or exc.__class__.__name__}
+
+    result = pipeline_script_from_package(package)
+    result["fact_pack"] = fact_pack
+    result["editorial_review"] = editorial
+    destination = settings.script_output_dir / fact_pack["event_id"]
+    result["story_package_path"] = str(write_story_package(package, destination))
+    write_story_package(fact_pack, destination / "fact_pack.json")
+    write_story_package(editorial, destination / "editorial_review.json")
+    return result
 
 
 def find_licensed_assets(candidate: Candidate, script: dict) -> list[dict]:
@@ -431,4 +491,7 @@ def _with_target(config: ReelConfig, target: str) -> ReelConfig:
         sources_file=config.sources_file,
         voice_id=config.voice_id,
         max_attempts=config.max_attempts,
+        script_provider=config.script_provider,
+        script_model=config.script_model,
+        script_output_dir=config.script_output_dir,
     )

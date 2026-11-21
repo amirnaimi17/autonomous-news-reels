@@ -36,6 +36,9 @@ def _config(tmp_path) -> ReelConfig:
         sources_file=tmp_path / "sources.json",
         voice_id="PEdcOLzbXYhL8IKOswXB",
         max_attempts=3,
+        script_provider="off",
+        script_model="gpt-4o-mini",
+        script_output_dir=tmp_path / "scripts",
     )
 
 
