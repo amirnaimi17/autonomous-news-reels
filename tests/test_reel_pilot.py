@@ -10,11 +10,13 @@ from pathlib import Path
 import pytest
 
 from app.cli import main
+from app.reels.commands import scene_assets_from_paths
 from app.reels.pilot import narration_from_story, run_persian_reel_pilot
 from app.reels.pipeline import Candidate
-from app.reels.render import make_silent_mp3
+from app.reels.render import build_data_scenes, make_silent_mp3
 from app.reels.store import ReelStore
 from app.reels.voice import ARAN_VOICE, prepare_spoken
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "tests" / "fixtures" / "reel_pilot"
 FIXTURE_STORY = FIXTURE_DIR / "story_package.json"
@@ -69,6 +71,37 @@ def test_narration_from_story_joins_scenes_in_order(story: dict) -> None:
     assert text == " ".join(
         str(scene["narration"]).strip() for scene in story["scenes"] if scene.get("narration")
     )
+
+
+def test_cli_asset_paths_stay_index_aligned_when_middle_file_missing(story: dict, tmp_path: Path) -> None:
+    """Missing --asset slots must not pull later photos onto earlier scenes."""
+
+    from app.reels.render import make_graphic_png
+
+    first = tmp_path / "scene-01.png"
+    third = tmp_path / "scene-03.png"
+    make_graphic_png(first, color="0x112233")
+    make_graphic_png(third, color="0x334455")
+    missing = tmp_path / "missing-scene-02.jpg"
+    assets = scene_assets_from_paths([first, missing, third, tmp_path / "also-missing.png"])
+    assert len(assets) == 4
+    assert assets[0]["path"] == str(first)
+    assert assets[0]["author"] == "scene-01"
+    assert assets[1]["path"] == ""
+    assert assets[1]["author"] == ""
+    assert assets[2]["path"] == str(third)
+    assert assets[2]["author"] == "scene-03"
+    assert assets[3]["path"] == ""
+
+    scenes = build_data_scenes(story, assets=assets, audio_duration_seconds=8.0)
+    assert [scene["graphic"] for scene in scenes] == [False, True, False, True]
+    assert scenes[0]["source_image"] == str(first)
+    assert scenes[0]["credit"] == "scene-01 / local-test"
+    assert scenes[1]["source_image"] == ""
+    assert scenes[1]["credit"] == ""
+    assert scenes[2]["source_image"] == str(third)
+    assert scenes[2]["credit"] == "scene-03 / local-test"
+    assert scenes[3]["credit"] == ""
 
 
 def test_offline_fixture_pilot_renders_qa_and_contact_sheet(story: dict, tmp_path: Path, monkeypatch) -> None:
@@ -303,3 +336,58 @@ def test_cli_run_persian_pilot_offline_skip_render(tmp_path: Path) -> None:
     assert (out_dir / "audio" / "narration.mp3").is_file()
     assert (out_dir / "pilot_report.json").is_file()
     assert not (out_dir / "reel.mp4").exists()
+
+
+def test_cli_run_persian_pilot_keeps_asset_slots_when_middle_missing(tmp_path: Path) -> None:
+    """Phase 6 CLI must not compact --asset lists when a middle path is missing."""
+
+    from app.reels.render import make_graphic_png
+
+    first = tmp_path / "cli-scene-01.png"
+    third = tmp_path / "cli-scene-03.png"
+    make_graphic_png(first, color="0x112233")
+    make_graphic_png(third, color="0x334455")
+    missing = tmp_path / "cli-missing-scene-02.jpg"
+    out_dir = tmp_path / "cli-asset-align"
+
+    code = main(
+        [
+            "run-persian-pilot",
+            "--story-package",
+            str(FIXTURE_STORY),
+            "--audio",
+            str(FIXTURE_AUDIO),
+            "--out-dir",
+            str(out_dir),
+            "--asset",
+            str(first),
+            "--asset",
+            str(missing),
+            "--asset",
+            str(third),
+            "--skip-render",
+        ]
+    )
+    assert code == 0
+    report = json.loads((out_dir / "pilot_report.json").read_text(encoding="utf-8"))
+    assets = report["assets"]
+    assert len(assets) == 3
+    assert assets[0]["path"] == str(first)
+    assert assets[0]["author"] == "cli-scene-01"
+    assert assets[0]["license_name"] == "local-test"
+    assert assets[1]["path"] == ""
+    assert assets[1]["author"] == ""
+    assert assets[1]["license_name"] == ""
+    assert assets[2]["path"] == str(third)
+    assert assets[2]["author"] == "cli-scene-03"
+    assert assets[2]["license_name"] == "local-test"
+
+    scenes = build_data_scenes(
+        json.loads(FIXTURE_STORY.read_text(encoding="utf-8")),
+        assets=assets,
+        audio_duration_seconds=8.0,
+    )
+    assert [scene["graphic"] for scene in scenes] == [False, True, False, True]
+    assert scenes[2]["source_image"] == str(third)
+    assert scenes[2]["credit"] == "cli-scene-03 / local-test"
+    assert scenes[1]["credit"] == ""

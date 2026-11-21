@@ -25,6 +25,35 @@ from app.services.news_sources.rss import RssNewsSource, UrllibTransport
 EXISTING_REEL = "20261119-deutschlandticket-2027-visual"
 
 
+def scene_assets_from_paths(
+    paths: list[Path] | None,
+    *,
+    license_name: str = "local-test",
+    role: str = "scene",
+) -> list[dict]:
+    """Map CLI ``--asset`` paths onto scene-index-aligned asset dicts.
+
+    Missing files keep their slot with an empty ``path`` so later images are not
+    shifted onto earlier scenes. ``build_data_scenes`` then uses a graphic for
+    that index only.
+    """
+
+    assets: list[dict] = []
+    for item in paths or []:
+        path = Path(item)
+        exists = path.is_file()
+        assets.append(
+            {
+                "path": str(path) if exists else "",
+                "license_name": license_name if exists else "",
+                "author": path.stem if exists else "",
+                "source_url": "",
+                "role": role if exists else "",
+            }
+        )
+    return assets
+
+
 def generate_reel_command(*, scheduled: bool, target: str, now: datetime | None = None) -> int:
     config = load_reel_config()
     if target:
@@ -539,7 +568,7 @@ def render_reel_command(
     except (OSError, json.JSONDecodeError) as exc:
         print(f"cannot load story package: {exc}", flush=True)
         return 1
-    assets = [{"path": str(item), "license_name": "local-test", "author": ""} for item in (asset or []) if item.is_file()]
+    assets = scene_assets_from_paths(asset)
     event_id = str(story.get("event_id") or "render")
     destination = Path(out) if out else DEFAULT_OUT_DIR / f"{event_id}.mp4"
     try:
@@ -592,17 +621,7 @@ def run_persian_pilot_command(
     if not path.is_file():
         print(f"story package missing: {path}", flush=True)
         return 1
-    assets = [
-        {
-            "path": str(item),
-            "license_name": "local-test",
-            "author": item.stem,
-            "source_url": "",
-            "role": "scene",
-        }
-        for item in (asset or [])
-        if item.is_file()
-    ]
+    assets = scene_assets_from_paths(asset)
     result = run_persian_reel_pilot(
         out_dir=out_dir,
         story_package=path,
