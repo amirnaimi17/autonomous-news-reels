@@ -529,13 +529,14 @@ def test_irrelevant_metadata_is_rejected(tmp_path: Path, monkeypatch) -> None:
     jpeg = tmp_path / "seed.jpg"
     _jpeg_bytes(jpeg)
     monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
-    with pytest.raises(PhotoError, match="no relevant photograph"):
+    with pytest.raises(PhotoError, match="no visually relevant photograph|no relevant photograph"):
         retrieve_licensed_photos_for_script(
             "Kindergeld rises to 259 euro",
             "Families in Germany keep Kindergeld.",
             _story_script(title_hint="Kindergeld", scenes=2),
             tmp_path / "assets-irrelevant",
             transport=_openverse_transport(jpeg.read_bytes(), mode="irrelevant"),
+            require_vision=False,
         )
 
 
@@ -545,11 +546,12 @@ def test_unrelated_photos_are_never_accepted(tmp_path: Path, monkeypatch) -> Non
     jpeg = tmp_path / "seed.jpg"
     _jpeg_bytes(jpeg)
     monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
-    with pytest.raises(PhotoError, match="no relevant photograph"):
+    with pytest.raises(PhotoError, match="no visually relevant photograph|no relevant photograph"):
         collect_scene_photos(
             [["Kindergeld family benefits Germany"], ["calculator paperwork desk"]],
             tmp_path / "assets-unrelated",
             transport=_openverse_transport(jpeg.read_bytes(), mode="irrelevant"),
+            require_vision=False,
             relevance_terms=[["Kindergeld", "family", "benefits"], ["calculator", "paperwork"]],
         )
 
@@ -558,12 +560,13 @@ def test_empty_relevance_terms_reject_all_candidates(tmp_path: Path, monkeypatch
     jpeg = tmp_path / "seed.jpg"
     _jpeg_bytes(jpeg)
     monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
-    with pytest.raises(PhotoError, match="no relevant photograph"):
+    with pytest.raises(PhotoError, match="no visually relevant photograph|no relevant photograph"):
         collect_scene_photos(
             [["Kindergeld Germany"]],
             tmp_path / "assets-empty-terms",
             transport=_openverse_transport(jpeg.read_bytes(), mode="ok"),
             relevance_terms=[[]],
+            require_vision=False,
         )
 
 
@@ -664,6 +667,7 @@ def test_missing_license_metadata_is_accepted(tmp_path: Path, monkeypatch) -> No
         _story_script(title_hint="Kindergeld", scenes=1),
         tmp_path / "assets-nolurl",
         transport=_openverse_transport(jpeg.read_bytes(), mode="missing_license_url"),
+            require_vision=False
     )
     assert len(assets) == 1
     assert Path(assets[0]["path"]).is_file()
@@ -681,6 +685,7 @@ def test_retrieve_licensed_photos_matches_scene_count(tmp_path: Path) -> None:
         tmp_path / "assets",
         transport=_openverse_transport(jpeg.read_bytes()),
         reel_id="buergergeld",
+            require_vision=False
     )
     assert len(assets) == 5
     for index, asset in enumerate(assets):
@@ -697,13 +702,14 @@ def test_missing_photographs_raise_and_log(tmp_path: Path, monkeypatch) -> None:
     jpeg = tmp_path / "seed.jpg"
     _jpeg_bytes(jpeg)
     monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
-    with pytest.raises(PhotoError, match="no relevant photograph"):
+    with pytest.raises(PhotoError, match="no visually relevant photograph|no relevant photograph"):
         retrieve_licensed_photos_for_script(
             "Unknown topic",
             "No images available.",
             _story_script(title_hint="Unknown", scenes=2),
             tmp_path / "assets-empty",
             transport=_openverse_transport(jpeg.read_bytes(), mode="empty"),
+            require_vision=False
         )
 
 
@@ -717,6 +723,7 @@ def test_nc_license_photos_are_accepted_when_relevant(tmp_path: Path, monkeypatc
         _story_script(title_hint="Kindergeld", scenes=2),
         tmp_path / "assets-nc",
         transport=_openverse_transport(jpeg.read_bytes(), mode="nc_only"),
+            require_vision=False
     )
     assert len(assets) == 2
     assert all(Path(asset["path"]).is_file() for asset in assets)
@@ -728,13 +735,14 @@ def test_download_failure_is_logged(tmp_path: Path, monkeypatch) -> None:
     _jpeg_bytes(jpeg)
     dest = tmp_path / "assets-fail"
     monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
-    with pytest.raises(PhotoError, match="no relevant photograph|download"):
+    with pytest.raises(PhotoError, match="no visually relevant photograph|no relevant photograph|download"):
         retrieve_licensed_photos_for_script(
             "Download fail topic",
             "Images cannot be fetched.",
             _story_script(title_hint="Fail", scenes=1),
             dest,
             transport=_openverse_transport(jpeg.read_bytes(), mode="download_fail"),
+            require_vision=False
         )
     assert not (dest / "scene-01.jpg").is_file()
     log = json.loads((dest / "image_search_log.json").read_text(encoding="utf-8"))
@@ -774,13 +782,14 @@ def test_corrupt_image_is_rejected(tmp_path: Path, monkeypatch) -> None:
         return b"<html>not an image</html>" + (b"x" * 3000)
 
     log = SearchLog()
-    with pytest.raises(PhotoError, match="no relevant photograph"):
+    with pytest.raises(PhotoError, match="no visually relevant photograph|no relevant photograph"):
         collect_scene_photos(
             [["Kindergeld family benefits Germany"]],
             dest,
             transport=transport,
             relevance_terms=[["Kindergeld", "family", "benefits"]],
             log=log,
+            require_vision=False
         )
     assert any(entry.get("action") == "download_failed" for entry in log.entries)
 
@@ -841,6 +850,7 @@ def test_duplicate_images_are_skipped_across_scenes(tmp_path: Path, monkeypatch)
         transport=transport,
         relevance_terms=[["Kindergeld", "family", "benefits"], ["Kindergeld", "family", "benefits"]],
         log=log,
+            require_vision=False
     )
     assert len(assets) == 2
     assert assets[0].download_url != assets[1].download_url
@@ -878,6 +888,7 @@ def test_find_licensed_assets_uses_photo_service(tmp_path: Path) -> None:
         _story_script(title_hint="Mindestlohn", scenes=4),
         config=config,
         transport=_openverse_transport(jpeg.read_bytes()),
+        require_vision=False,
     )
     assert len(assets) == 4
     assert all(asset.get("kind") == "licensed-photo" for asset in assets)
@@ -1001,6 +1012,7 @@ def test_manual_and_scheduled_generation_retrieve_photographs(tmp_path: Path, mo
             script,
             config=config or _reel_config(tmp_path),
             transport=_openverse_transport(jpeg_bytes),
+            require_vision=False,
         )
         captured["assets"] = assets
         return assets
@@ -1093,6 +1105,7 @@ def test_acceptance_production_path_mocked_providers(tmp_path: Path) -> None:
             script,
             config=config,
             transport=_openverse_transport(jpeg.read_bytes()),
+            require_vision=False,
         )
 
     def narrate(text, voice_id):
@@ -1299,6 +1312,7 @@ def test_realistic_photo_remotion_integration(tmp_path: Path, monkeypatch) -> No
             out_dir / "assets",
             transport=transport,
             reel_id=run_id,
+            require_vision=False
         )
         assert len(assets) == 4
         assert all(Path(asset["path"]).is_file() for asset in assets)
