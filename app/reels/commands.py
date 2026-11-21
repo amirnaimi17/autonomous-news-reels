@@ -7,6 +7,7 @@ narrates and renders. It never calls the silent voice or solid-image stubs.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -455,17 +456,43 @@ def discover_candidates(config: ReelConfig, now: datetime) -> list[Candidate]:
 
 
 def verify_http(candidate: Candidate) -> dict:
+    """Fetch the article page and return a plain-text excerpt for the fact pack.
+
+    Reads enough of the page to capture figure-bearing sentences. Does not invent
+    facts — the excerpt is only cleaned HTML text from the source URL.
+    """
+
     import urllib.request
 
-    request = urllib.request.Request(candidate.url, headers={"User-Agent": "AutonomousNewsReels/0.1"})
-    with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
-        body = response.read(20000).decode("utf-8", errors="replace")
+    from app.services.grounding import extract_numbers
+    from app.services.text import plain_text
+
+    request = urllib.request.Request(
+        candidate.url,
+        headers={"User-Agent": "AutonomousNewsReels/0.1 (local reel research)"},
+    )
+    with urllib.request.urlopen(request, timeout=25) as response:  # noqa: S310
+        raw = response.read(160_000).decode("utf-8", errors="replace")
         if response.status != 200:
             return {"ok": False, "excerpt": ""}
+    text = plain_text(raw)
     tokens = [token for token in candidate.title.split() if len(token) > 4]
-    if tokens and not any(token.casefold() in body.casefold() for token in tokens[:4]):
-        return {"ok": False, "excerpt": body[:400]}
-    return {"ok": True, "excerpt": body[:400]}
+    haystack = text.casefold()
+    if tokens and not any(token.casefold() in haystack for token in tokens[:4]):
+        return {"ok": False, "excerpt": text[:800]}
+    # Prefer sentences that carry figures so Persian numeral grounding has support.
+    parts = [part.strip() for part in re.split(r"(?<=[.!?؟۔])\s+", text) if part.strip()]
+    ranked = sorted(parts, key=lambda sentence: (0 if extract_numbers(sentence) else 1, parts.index(sentence)))
+    excerpt_parts: list[str] = []
+    total = 0
+    for sentence in ranked:
+        if total >= 4500:
+            break
+        excerpt_parts.append(sentence)
+        total += len(sentence) + 1
+    if not excerpt_parts:
+        excerpt_parts = [text[:4500]]
+    return {"ok": True, "excerpt": " ".join(excerpt_parts)[:5000]}
 
 
 def write_grounded_script(
