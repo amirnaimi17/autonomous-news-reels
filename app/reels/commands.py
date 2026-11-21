@@ -87,7 +87,7 @@ def generate_reel_command(*, scheduled: bool, target: str, now: datetime | None 
             candidates=candidates,
             verify_source=verify_http,
             write_script=write_grounded_script,
-            find_assets=find_licensed_assets,
+            find_assets=lambda candidate, script: find_licensed_assets(candidate, script, config=config),
             narrate=narrate_aran,
             render_video=render_with_remotion,
             probe_video=probe_mp4,
@@ -400,21 +400,44 @@ def write_grounded_script(
     return result
 
 
-def find_licensed_assets(candidate: Candidate, script: dict) -> list[dict]:
-    """Graphics are allowed. A paid image is not invented here."""
+def find_licensed_assets(
+    candidate: Candidate,
+    script: dict,
+    *,
+    config: ReelConfig | None = None,
+    transport=None,
+) -> list[dict]:
+    """Download real licensed photographs for every storyboard scene.
 
-    del candidate, script
-    return [
-        {
-            "path": "",
-            "source_url": "",
-            "author": "",
-            "license_name": "remotion-graphic",
-            "license_url": "",
-            "role": "remotion-graphic",
-            "kind": "remotion-graphic",
-        }
-    ]
+    Runs entirely in Python (Openverse + Commons). Raises ``PhotoError`` when a
+    mandatory photograph cannot be retrieved so paid TTS never starts. Never
+    returns Remotion graphic placeholders for production.
+    """
+
+    from app.reels.photos import PhotoError, retrieve_licensed_photos_for_script
+
+    settings = config or load_reel_config()
+    package = script.get("story_package") if isinstance(script.get("story_package"), dict) else {}
+    event_id = str(package.get("event_id") or script.get("reel_id") or "reel")
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in event_id)[:80] or "reel"
+    destination = settings.working_directory / "storage" / "generated" / "reels" / "assets" / safe
+    try:
+        assets = retrieve_licensed_photos_for_script(
+            candidate.title,
+            candidate.summary,
+            script,
+            destination,
+            transport=transport,
+            reel_id=safe,
+        )
+    except PhotoError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - surface as PhotoError for the pipeline gate
+        raise PhotoError(f"photograph retrieval failed: {exc}") from exc
+    for asset in assets:
+        asset.setdefault("kind", "licensed-photo")
+        asset.setdefault("role", "scene")
+    return assets
 
 
 def narrate_aran(

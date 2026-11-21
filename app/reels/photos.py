@@ -542,3 +542,180 @@ FRUEHSTART_SCENE_QUERIES: list[list[str]] = [
         "pension folder documents",
     ],
 ]
+
+
+_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "that",
+    "this",
+    "into",
+    "over",
+    "under",
+    "about",
+    "after",
+    "before",
+    "eine",
+    "einer",
+    "einem",
+    "einen",
+    "oder",
+    "auch",
+    "nicht",
+    "sich",
+    "wird",
+    "werden",
+    "sind",
+    "der",
+    "die",
+    "das",
+    "den",
+    "dem",
+    "des",
+    "und",
+    "mit",
+    "von",
+    "zu",
+    "im",
+    "in",
+    "auf",
+    "für",
+    "bei",
+    "amp",
+}
+
+
+def _tokenize(text: str) -> list[str]:
+    words = re.findall(r"[A-Za-zÄÖÜäöüß0-9]{3,}", text or "")
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for word in words:
+        key = word.casefold()
+        if key in _STOPWORDS or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(word)
+    return cleaned
+
+
+def _scene_list_from_script(script: dict[str, Any]) -> list[dict[str, Any]]:
+    package = script.get("story_package")
+    if isinstance(package, dict) and isinstance(package.get("scenes"), list):
+        return [scene for scene in package["scenes"] if isinstance(scene, dict)]
+    board = script.get("storyboard_json") or "[]"
+    if isinstance(board, str):
+        try:
+            parsed = json.loads(board)
+        except json.JSONDecodeError:
+            return []
+    else:
+        parsed = board
+    if isinstance(parsed, dict) and isinstance(parsed.get("scenes"), list):
+        return [scene for scene in parsed["scenes"] if isinstance(scene, dict)]
+    if isinstance(parsed, list):
+        return [scene for scene in parsed if isinstance(scene, dict)]
+    return []
+
+
+def build_scene_photo_queries(
+    candidate_title: str,
+    candidate_summary: str,
+    script: dict[str, Any],
+    *,
+    fact_pack: dict[str, Any] | None = None,
+) -> list[list[str]]:
+    """Build Openverse/Commons query lists dynamically for every storyboard scene."""
+
+    scenes = _scene_list_from_script(script)
+    title_tokens = _tokenize(candidate_title)[:6]
+    summary_tokens = _tokenize(candidate_summary)[:8]
+    fact_tokens: list[str] = []
+    pack = fact_pack if isinstance(fact_pack, dict) else script.get("fact_pack")
+    if isinstance(pack, dict):
+        fact_tokens = _tokenize(str(pack.get("event_summary") or ""))[:8]
+        for item in pack.get("verified_facts") or []:
+            if isinstance(item, dict):
+                fact_tokens.extend(_tokenize(str(item.get("text") or ""))[:4])
+        fact_tokens = list(dict.fromkeys(fact_tokens))[:10]
+    topic = " ".join(title_tokens[:4]) or "Germany news"
+    germany = "Germany"
+    if not scenes:
+        # Still require photographs even when the storyboard is empty: four topic plates.
+        return [
+            [f"{topic} building {germany}", f"{topic} government {germany}", f"{topic} news {germany}"],
+            [f"{topic} money euro", f"{topic} coins", "euro coins savings"],
+            [f"{topic} family savings", f"{topic} household", "piggy bank savings"],
+            [f"{topic} documents", f"{topic} planning", "financial documents desk"],
+        ]
+
+    queries: list[list[str]] = []
+    for index, scene in enumerate(scenes):
+        visual = str(scene.get("visual_prompt") or "").strip()
+        on_screen = str(scene.get("on_screen_text") or "").strip()
+        narration = str(scene.get("narration") or "").strip()
+        visual_tokens = _tokenize(visual)[:6]
+        # Prefer English visual prompts for Openverse; fall back to topic tokens.
+        primary = visual if re.search(r"[A-Za-z]{3,}", visual) else ""
+        secondary_bits = visual_tokens or title_tokens[:3] or summary_tokens[:3]
+        secondary = " ".join(secondary_bits)
+        tertiary = " ".join((title_tokens[:2] + fact_tokens[:2] + summary_tokens[:2])[:5])
+        scene_queries = []
+        if primary:
+            scene_queries.append(primary)
+            scene_queries.append(f"{primary} {germany}")
+        if secondary:
+            scene_queries.append(f"{secondary} {germany}".strip())
+        if tertiary:
+            scene_queries.append(f"{tertiary} photograph")
+        # Keep Persian on-screen text out of search strings; use topic anchors instead.
+        if not scene_queries:
+            scene_queries = [f"{topic} scene {index + 1}", f"{topic} {germany}"]
+        # Deduplicate while preserving order.
+        ordered = list(dict.fromkeys(item for item in scene_queries if item.strip()))
+        queries.append(ordered[:4])
+        del on_screen, narration  # reserved for future relevance scoring
+    return queries
+
+
+def retrieve_licensed_photos_for_script(
+    candidate_title: str,
+    candidate_summary: str,
+    script: dict[str, Any],
+    destination_dir: Path,
+    *,
+    transport: Transport | None = None,
+    reel_id: str = "",
+) -> list[dict[str, Any]]:
+    """Search, download, validate, and return index-aligned photograph assets.
+
+    Raises ``PhotoError`` when any required scene photograph is missing or invalid.
+    Never returns Remotion graphic placeholders.
+    """
+
+    queries = build_scene_photo_queries(
+        candidate_title,
+        candidate_summary,
+        script,
+        fact_pack=script.get("fact_pack") if isinstance(script.get("fact_pack"), dict) else None,
+    )
+    if not queries:
+        raise PhotoError("no scene photo queries could be built")
+    destination_dir = Path(destination_dir)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    photos, log = collect_scene_photos(queries, destination_dir, transport=transport)
+    log.write(destination_dir / "image_search_log.json")
+    (destination_dir / "photo_queries.json").write_text(
+        json.dumps({"queries": queries, "title": candidate_title}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    write_attribution_manifest(photos, destination_dir / "attribution_manifest.json", reel_id=reel_id or destination_dir.name)
+    assets = assets_for_render(photos)
+    problems = require_photographic_assets(assets, expected_scenes=len(queries))
+    if problems:
+        raise PhotoError("photographic acceptance gate failed: " + "; ".join(problems))
+    if len(assets) != len(queries):
+        raise PhotoError(f"expected {len(queries)} photographs, got {len(assets)}")
+    return assets
