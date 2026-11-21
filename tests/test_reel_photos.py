@@ -547,6 +547,36 @@ def test_relaxed_relevance_keeps_concrete_scene_terms() -> None:
     assert relaxed  # never relaxes to an empty accept-all list
 
 
+def test_searchable_visual_queries_prefer_short_noun_phrases() -> None:
+    from app.reels.photos import searchable_visual_queries
+
+    queries = searchable_visual_queries("a thoughtful person looking at a car factory")
+    assert queries[0].casefold() == "car factory"
+    assert "car factory Germany" in queries
+    assert queries[-1].startswith("a thoughtful") or "thoughtful" in queries[-2].casefold()
+
+    auto = build_scene_photo_queries(
+        "Bilger fordert Bekenntnis der Autoindustrie zu Deutschland",
+        "Autokonzerne und neue Verbrenner in Germany.",
+        {
+            "story_package": {
+                "scenes": [
+                    {
+                        "number": 1,
+                        "duration_seconds": 3,
+                        "narration": "خبر",
+                        "on_screen_text": "۱",
+                        "visual_prompt": "a thoughtful person looking at a car factory",
+                    }
+                ]
+            }
+        },
+    )
+    flat = " ".join(auto[0]).casefold()
+    assert "car factory" in flat
+    assert "assembly line" in flat or "automobile factory" in flat
+
+
 def test_photo_failure_blocks_voice_before_elevenlabs(tmp_path: Path) -> None:
     config = _reel_config(tmp_path)
     store = ReelStore(config.database_path)

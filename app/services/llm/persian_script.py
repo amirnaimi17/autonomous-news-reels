@@ -137,8 +137,10 @@ Required top-level JSON object (schema_version pilot-1):
 CRITICAL:
 - "scenes" MUST be a JSON array/list of 3–8 objects. Never an object/map keyed by numbers.
 - Do not nest scenes under another key.
-- visual_prompt must describe a real-world photograph useful for stock/Commons search
-  (places, objects, documents, buildings). Do NOT use generic graphic/typography cards.
+- visual_prompt must be a short English photograph search phrase (about 4–12 words) naming
+  concrete places, objects, or buildings that exist in stock/Commons catalogs
+  (example: "German car factory assembly line"). Avoid mood adjectives, posed people, and
+  graphic/typography cards.
 - Do not invent numbers, dates, outcomes, or quotes outside the fact pack.
 """.strip()
 

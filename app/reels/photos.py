@@ -231,7 +231,59 @@ _RELAX_DROP = {
     "modern",
     "beautiful",
     "collage",
+    "thoughtful",
+    "looking",
+    "watching",
+    "standing",
+    "sitting",
+    "holding",
 }
+
+
+_VISUAL_FILLER = _RELAX_DROP | {
+    "photo",
+    "photograph",
+    "image",
+    "picture",
+    "showing",
+    "depicting",
+    "scene",
+    "view",
+    "near",
+    "next",
+    "some",
+    "many",
+    "several",
+}
+
+
+def searchable_visual_queries(visual: str, *, germany: str = "Germany") -> list[str]:
+    """Turn a long art-direction prompt into short Commons/Openverse search phrases.
+
+    Poetic prompts like "a thoughtful person looking at a car factory" return zero
+    hits; noun-focused queries like "car factory Germany" succeed.
+    """
+
+    text = " ".join(str(visual or "").split()).strip()
+    if not text:
+        return []
+    tokens = [
+        token
+        for token in _tokenize(text)
+        if token.casefold() not in _VISUAL_FILLER and re.fullmatch(r"[A-Za-z][A-Za-z-]{2,}", token or "")
+    ]
+    queries: list[str] = []
+    if len(tokens) >= 2:
+        short = " ".join(tokens[:4])
+        queries.append(short)
+        queries.append(f"{short} {germany}")
+    if len(tokens) >= 1:
+        queries.append(f"{tokens[0]} {germany}")
+    # Keep the original last so search still tries it, but short forms run first.
+    if re.search(r"[A-Za-z]{3,}", text):
+        queries.append(text)
+        queries.append(f"{text} {germany}")
+    return list(dict.fromkeys(item for item in queries if item.strip()))
 
 
 def relaxed_relevance_terms(strict_terms: Sequence[str], queries: Sequence[str]) -> list[str]:
@@ -925,42 +977,72 @@ def build_scene_photo_queries(
     queries: list[list[str]] = []
     for index, scene in enumerate(scenes):
         visual = str(scene.get("visual_prompt") or "").strip()
-        visual_tokens = _tokenize(visual)[:6]
         graphic_like = looks_like_graphic_prompt(visual)
-        # Prefer concrete English visual prompts; skip graphic/typography instructions.
-        primary = ""
-        if visual and re.search(r"[A-Za-z]{3,}", visual) and not graphic_like:
-            primary = visual
-        topic_bits = title_tokens[:3] or summary_tokens[:3] or fact_tokens[:3]
-        secondary = " ".join(visual_tokens if (visual_tokens and not graphic_like) else topic_bits)
+        scene_queries: list[str] = []
+        # Short searchable English phrases first — long art-direction lines often hit 0 results.
+        if visual and not graphic_like:
+            scene_queries.extend(searchable_visual_queries(visual, germany=germany))
+        folded_visual = visual.casefold()
+        folded_topic = f"{candidate_title} {candidate_summary}".casefold()
+        visual_keys = {token.casefold() for token in _tokenize(visual)}
+        topic_keys = {token.casefold() for token in _tokenize(f"{candidate_title} {candidate_summary}")}
+        auto_keys = {
+            "auto",
+            "car",
+            "cars",
+            "factory",
+            "fahrzeug",
+            "industrie",
+            "automotive",
+            "hybrid",
+            "hybride",
+            "verbrenner",
+            "autoindustrie",
+            "autokonzern",
+            "autokonzernen",
+        }
+        if visual_keys & auto_keys or topic_keys & auto_keys or "autoindustrie" in folded_topic:
+            scene_queries.extend(
+                [
+                    "car factory Germany",
+                    "automobile factory Germany",
+                    "car assembly line Germany",
+                    "automotive manufacturing plant",
+                ]
+            )
+        if visual_keys & {"document", "legal", "law", "contract", "pen", "note", "calculator", "paperwork"}:
+            scene_queries.extend(
+                [
+                    "calculator paperwork desk",
+                    "financial planning documents desk",
+                    "euro coins calculator Germany",
+                ]
+            )
+        if visual_keys & {"pension", "riester", "retire", "retirement", "vorsorge"} or any(
+            hint in folded_topic for hint in ("riester", "altersvorsorge", "pension")
+        ):
+            scene_queries.extend(
+                [
+                    "retirement savings Germany",
+                    "pension documents Germany",
+                ]
+            )
+        if visual_keys & {"family", "everyday", "community", "home", "people", "elderly"}:
+            scene_queries.extend(
+                [
+                    "everyday life Germany city street",
+                    "Berlin residential street photograph",
+                ]
+            )
+        # English topic leftovers from the title/summary (skip German-only token soup).
         english_topic = " ".join(
             token
             for token in (title_tokens + summary_tokens + fact_tokens)
             if re.fullmatch(r"[A-Za-z][A-Za-z-]{2,}", token or "")
         )
-        scene_queries: list[str] = []
-        if primary:
-            scene_queries.append(primary)
-            scene_queries.append(f"{primary} {germany}")
-        if secondary and re.search(r"[A-Za-z]{3,}", secondary):
-            scene_queries.append(f"{secondary} {germany}".strip())
-        # Prefer English Openverse/Commons queries; raw German title tokens rarely match.
         if english_topic:
             scene_queries.append(f"{english_topic} {germany}")
-            scene_queries.append(f"{english_topic} Berlin")
-        folded_visual = visual.casefold()
-        folded_topic = f"{candidate_title} {candidate_summary}".casefold()
-        if any(token in folded_visual for token in ("document", "legal", "law", "contract", "pen", "note", "calculator")):
-            scene_queries.append("calculator paperwork desk")
-            scene_queries.append("financial planning documents desk")
-            scene_queries.append("euro coins calculator Germany")
-        if any(token in folded_visual or token in folded_topic for token in ("pension", "riester", "alters", "retire", "vorsorge")):
-            scene_queries.append("retirement savings Germany")
-            scene_queries.append("pension documents Germany")
-        if any(token in folded_visual for token in ("family", "everyday", "community", "home", "people", "elderly")):
-            scene_queries.append("everyday life Germany city street")
-            scene_queries.append("Berlin residential street photograph")
-        # Durable English institutional fallbacks last so scene-specific prompts stay first.
+        # Durable institutional English fallbacks last (search coverage only).
         scene_queries.extend(
             [
                 "German parliament Berlin",
