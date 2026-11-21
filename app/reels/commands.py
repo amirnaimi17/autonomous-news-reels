@@ -529,6 +529,7 @@ def write_grounded_script(
     except ConfigurationError as exc:
         return {"status": "blocked_paid" if not paid_generation else "rejected", "message": str(exc)}
     except (GroundingError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        # Invalid packages never continue to photo retrieval, ElevenLabs, or Remotion.
         return {"status": "rejected", "message": str(exc) or exc.__class__.__name__}
 
     result = pipeline_script_from_package(package)

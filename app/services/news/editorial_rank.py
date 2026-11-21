@@ -18,6 +18,52 @@ from app.services.llm.openai_script import DEFAULT_MODEL, complete_chat
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_AUDIENCES_FILE = ROOT / "config" / "editorial_audiences.json"
 
+# Strict schema for Chat Completions structured outputs (never the story-package schema).
+EDITORIAL_RANKING_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["rankings", "selected_id", "rejection_reason"],
+    "properties": {
+        "rankings": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "id",
+                    "score",
+                    "relevance",
+                    "practical_impact",
+                    "newsworthiness",
+                    "audience_interest",
+                    "freshness",
+                    "suitable",
+                ],
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "score": {"type": "number"},
+                    "relevance": {"type": "string"},
+                    "practical_impact": {"type": "string"},
+                    "newsworthiness": {"type": "string"},
+                    "audience_interest": {"type": "string"},
+                    "freshness": {"type": "string"},
+                    "suitable": {"type": "boolean"},
+                },
+            },
+        },
+        "selected_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "rejection_reason": {"type": "string"},
+    },
+}
+
+_RANKING_SYSTEM = (
+    "You are a news editor ranking retrieved articles. Reply with one JSON object only. "
+    "The top-level key rankings MUST be a JSON array of 1–3 objects (never an object/map). "
+    "Select only supplied article ids. Never invent ids or URLs."
+)
+
 # Approximate public Chat Completions prices for cost reporting only.
 _MODEL_USD_PER_MTOKEN = {
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
@@ -225,6 +271,7 @@ def build_ranking_prompt(
         "- Score each chosen article from 0.0 to 1.0 using relevance, practical impact, "
         "newsworthiness, audience interest, and freshness.\n"
         "- Mark suitable=true only when the story is good enough to publish for this audience.\n"
+        "- If any ranking is suitable, selected_id MUST be that article's id (the best one).\n"
         "- If none are suitable, set selected_id to null and explain in rejection_reason.\n"
         "- Return at most three rankings, best first.\n\n"
         "Reply with one JSON object:\n"
@@ -248,6 +295,40 @@ def build_ranking_prompt(
     )
 
 
+def ranking_structure_errors(payload: Mapping[str, Any]) -> list[str]:
+    """Immediate structural checks before id/score validation."""
+
+    errors: list[str] = []
+    rankings = payload.get("rankings")
+    if rankings is None:
+        errors.append("editorial ranking response missing rankings list")
+    elif isinstance(rankings, dict):
+        errors.append("editorial ranking rankings must be a list, not an object/map")
+    elif not isinstance(rankings, list):
+        errors.append("editorial ranking response missing rankings list")
+    elif not rankings:
+        errors.append("editorial ranking rankings list is empty")
+    elif len(rankings) > 3:
+        errors.append("editorial ranking rankings must contain at most three items")
+    return errors
+
+
+def ranking_correction_prompt(
+    *,
+    original_prompt: str,
+    previous: Mapping[str, Any] | str,
+    errors: list[str],
+) -> str:
+    return (
+        "Your previous editorial ranking JSON failed validation.\n"
+        "Return ONLY a corrected JSON object.\n"
+        "Ensure top-level rankings is a JSON array of 1–3 objects with ids from the article list.\n"
+        f"VALIDATION_ERRORS:\n{json.dumps(errors, ensure_ascii=False)}\n"
+        f"PREVIOUS_RESPONSE:\n{json.dumps(previous, ensure_ascii=False) if isinstance(previous, Mapping) else previous}\n\n"
+        f"{original_prompt}"
+    )
+
+
 def parse_ranking_response(
     payload: Mapping[str, Any],
     articles_by_id: Mapping[str, Mapping[str, Any]],
@@ -257,6 +338,9 @@ def parse_ranking_response(
     """Validate model output against the retrieved id set."""
 
     known = set(articles_by_id)
+    early = ranking_structure_errors(payload)
+    if early:
+        raise GroundingError("; ".join(early))
     raw_rankings = payload.get("rankings")
     if not isinstance(raw_rankings, list):
         raise GroundingError("editorial ranking response missing rankings list")
@@ -322,6 +406,17 @@ def parse_ranking_response(
                 suitable=False,
                 published_at=str(source.get("published_at") or ""),
             )
+
+    # Models sometimes leave selected_id null while still marking a top item suitable.
+    # Prefer the best suitable ranked article rather than rejecting a usable pick.
+    if selected is None or not (selected.suitable and selected.score >= min_score):
+        fallback = next(
+            (item for item in ranked if item.suitable and item.score >= min_score),
+            None,
+        )
+        if fallback is not None:
+            selected = fallback
+            selected_id = fallback.article_id
 
     rejection = str(payload.get("rejection_reason") or "").strip()
     if selected is not None and selected.suitable and selected.score >= min_score:
@@ -417,22 +512,57 @@ def rank_retrieved_articles(
     completer = complete or complete_chat
     kwargs: dict[str, Any] = {"model": chosen_model}
     if complete is None:
+        # Live OpenAI path: constrain to the ranking schema, never the story-package schema.
         kwargs["api_key"] = api_key
         kwargs["transport"] = transport
-    payload = completer(prompt, {"audience_id": audience_id, "article_ids": list(by_id)}, **kwargs)
-    if not isinstance(payload, Mapping):
-        raise GroundingError("editorial ranking response must be a JSON object")
-    # Injected completes may return either the assistant JSON or {"content": ..., "usage": ...}.
-    if "rankings" in payload:
-        content = payload
-        if isinstance(payload.get("_usage"), Mapping):
-            usage = usage_from_openai_payload({"usage": payload["_usage"]}, model=chosen_model)
-    elif isinstance(payload.get("content"), Mapping):
-        content = payload["content"]
-        usage = usage_from_openai_payload(payload, model=chosen_model) if payload.get("usage") else usage
-    else:
-        content = payload
-    result = parse_ranking_response(content, by_id, min_score=threshold)
+        kwargs["json_schema"] = EDITORIAL_RANKING_JSON_SCHEMA
+        kwargs["schema_name"] = "editorial_ranking"
+        kwargs["system_content"] = _RANKING_SYSTEM
+        kwargs["use_json_schema"] = False
+
+    def _extract_content(payload: Any) -> Mapping[str, Any]:
+        if not isinstance(payload, Mapping):
+            raise GroundingError("editorial ranking response must be a JSON object")
+        nonlocal usage
+        if "rankings" in payload:
+            if isinstance(payload.get("_usage"), Mapping):
+                usage = usage_from_openai_payload({"usage": payload["_usage"]}, model=chosen_model)
+            return payload
+        if isinstance(payload.get("content"), Mapping):
+            if payload.get("usage"):
+                usage = usage_from_openai_payload(payload, model=chosen_model)
+            return payload["content"]
+        return payload
+
+    context = {"audience_id": audience_id, "article_ids": list(by_id), "attempt": 1}
+    payload = completer(prompt, context, **kwargs)
+    content = _extract_content(payload)
+    try:
+        result = parse_ranking_response(content, by_id, min_score=threshold)
+    except GroundingError as first_error:
+        errors = [part.strip() for part in str(first_error).split(";") if part.strip()]
+        retry_prompt = ranking_correction_prompt(
+            original_prompt=prompt,
+            previous=content if isinstance(content, Mapping) else str(content),
+            errors=errors or [str(first_error)],
+        )
+        corrected = completer(
+            retry_prompt,
+            {
+                "audience_id": audience_id,
+                "article_ids": list(by_id),
+                "attempt": 2,
+                "correction": True,
+                "previous_errors": errors,
+            },
+            **kwargs,
+        )
+        try:
+            result = parse_ranking_response(_extract_content(corrected), by_id, min_score=threshold)
+        except GroundingError as second_error:
+            raise GroundingError(
+                f"editorial ranking invalid after correction attempt: {second_error}"
+            ) from second_error
     result.audience_id = audience_id
     result.usage = usage
     result.min_score = threshold

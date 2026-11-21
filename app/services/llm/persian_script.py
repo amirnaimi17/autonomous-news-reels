@@ -110,26 +110,131 @@ def build_editorial_brief(
     }
 
 
+_STORY_PACKAGE_SCHEMA_TEXT = """
+Required top-level JSON object (schema_version pilot-1):
+{
+  "schema_version": "pilot-1",
+  "event_id": "<same as fact pack>",
+  "language": "fa-IR",
+  "audience": "Iranians living in Germany",
+  "headline": "<Persian headline>",
+  "source_urls": ["https://..."],
+  "claims": [{"text": "...", "source_urls": ["https://..."]}],
+  "duration_seconds": 40,
+  "duration_policy": "completeness",
+  "scenes": [
+    {
+      "number": 1,
+      "duration_seconds": 9,
+      "narration": "<Persian spoken line with attribution>",
+      "on_screen_text": "<short Persian caption>",
+      "visual_prompt": "<English photograph search description>"
+    }
+  ],
+  "disclaimers": []
+}
+
+CRITICAL:
+- "scenes" MUST be a JSON array/list of 3–8 objects. Never an object/map keyed by numbers.
+- Do not nest scenes under another key.
+- visual_prompt must be a short English photograph search phrase (about 4–12 words) naming
+  concrete places, objects, or buildings that exist in stock/Commons catalogs
+  (example: "German car factory assembly line"). Avoid mood adjectives, posed people, and
+  graphic/typography cards.
+- Do not invent numbers, dates, outcomes, or quotes outside the fact pack.
+""".strip()
+
+
 def script_prompt(fact_pack: Mapping[str, Any], editorial: Mapping[str, Any]) -> str:
     """Prompt for a model that must return a pilot ``story_package`` JSON object."""
 
     return (
         "You write Instagram Reel narration for Persian-speaking people living in Germany.\n"
-        "Return ONLY a JSON object matching schema_version pilot-1.\n"
+        "Return ONLY one JSON object. No markdown fences.\n"
+        f"{_STORY_PACKAGE_SCHEMA_TEXT}\n"
         "Rules:\n"
         "- language must be fa-IR.\n"
         "- Write natural spoken Persian in short complete sentences.\n"
         "- Put attribution in the same sentence as each claim.\n"
-        "- Use three to eight scenes. Aim for 35–45 seconds; set duration_policy to "
-        "completeness when a sourced ending needs more time.\n"
-        "- Every material claim needs an entry in claims with source_urls from the fact pack.\n"
-        "- Do not invent numbers, dates, outcomes, or quotes.\n"
-        "- on_screen_text is a short mobile caption, not a full transcript.\n"
-        "- visual_prompt must be English art direction without baked-in Persian text.\n"
+        "- Aim for 35–45 seconds total; set duration_policy to completeness when needed.\n"
+        "- Every material claim needs claims[].source_urls from the fact pack.\n"
         "- Digits may stay in narration.\n"
         f"FACT_PACK:\n{json.dumps(fact_pack, ensure_ascii=False)}\n"
         f"EDITORIAL_REVIEW:\n{json.dumps(editorial, ensure_ascii=False)}\n"
     )
+
+
+def correction_prompt(
+    fact_pack: Mapping[str, Any],
+    editorial: Mapping[str, Any],
+    *,
+    previous: Mapping[str, Any] | str,
+    errors: list[str],
+) -> str:
+    """Ask the model to fix an invalid package. Never invent scenes locally."""
+
+    return (
+        "Your previous story_package JSON failed validation.\n"
+        "Return ONLY a corrected JSON object that fully matches the schema.\n"
+        "Do not invent new facts. Keep Persian narration grounded in the fact pack.\n"
+        "Ensure top-level scenes is a JSON array of 3–8 scene objects.\n"
+        "Ensure each visual_prompt is an English photograph search description.\n"
+        f"VALIDATION_ERRORS:\n{json.dumps(errors, ensure_ascii=False)}\n"
+        f"PREVIOUS_RESPONSE:\n{json.dumps(previous, ensure_ascii=False) if isinstance(previous, Mapping) else previous}\n"
+        f"{_STORY_PACKAGE_SCHEMA_TEXT}\n"
+        f"FACT_PACK:\n{json.dumps(fact_pack, ensure_ascii=False)}\n"
+        f"EDITORIAL_REVIEW:\n{json.dumps(editorial, ensure_ascii=False)}\n"
+    )
+
+
+_GRAPHIC_VISUAL_HINTS = (
+    "typographic",
+    "typography",
+    "title card",
+    "type card",
+    "graphic card",
+    "amount card",
+    "status card",
+    "attribution card",
+    "solid color",
+    "no photograph",
+    "text only",
+    "closing card",
+    "opener card",
+)
+
+
+def structure_errors(raw: Mapping[str, Any]) -> list[str]:
+    """Immediate structural checks before normalization / pilot validator."""
+
+    errors: list[str] = []
+    scenes = raw.get("scenes")
+    if scenes is None:
+        errors.append("story package scenes is missing")
+    elif isinstance(scenes, dict):
+        errors.append("story package scenes must be a list, not an object/map")
+    elif not isinstance(scenes, list):
+        errors.append("story package scenes must be a list")
+    elif not 3 <= len(scenes) <= 8:
+        errors.append(f"scenes must contain 3–8 items, got {len(scenes)}")
+    else:
+        for index, scene in enumerate(scenes, start=1):
+            if not isinstance(scene, Mapping):
+                errors.append(f"scene {index} must be an object")
+                continue
+            if not str(scene.get("narration") or "").strip():
+                errors.append(f"scene {index} needs narration")
+            visual = str(scene.get("visual_prompt") or "").strip()
+            if not visual:
+                errors.append(f"scene {index} needs visual_prompt")
+            elif not re.search(r"[A-Za-z]{3,}", visual):
+                errors.append(f"scene {index} visual_prompt must be English photograph search text")
+            elif any(hint in visual.casefold() for hint in _GRAPHIC_VISUAL_HINTS):
+                errors.append(
+                    f"scene {index} visual_prompt looks like a graphic placeholder; "
+                    "use a real photograph search description"
+                )
+    return errors
 
 
 def parse_model_story_package(payload: Mapping[str, Any] | str) -> dict[str, Any]:
@@ -185,6 +290,9 @@ def normalize_story_package(
         ]
     if not isinstance(package.get("disclaimers"), list):
         package["disclaimers"] = []
+    early = structure_errors(package)
+    if early:
+        raise GroundingError("; ".join(early))
     scenes = package.get("scenes")
     if not isinstance(scenes, list):
         raise GroundingError("story package scenes must be a list")
@@ -199,9 +307,10 @@ def normalize_story_package(
             raise GroundingError(f"scene {index} needs narration")
         item["narration"] = narration
         item["on_screen_text"] = str(item.get("on_screen_text") or "").strip() or _short_caption(narration)
-        item["visual_prompt"] = str(item.get("visual_prompt") or "").strip() or (
-            "Typographic news card. No photograph of people or places."
-        )
+        visual = str(item.get("visual_prompt") or "").strip()
+        if not visual:
+            raise GroundingError(f"scene {index} needs visual_prompt for photograph search")
+        item["visual_prompt"] = visual
         seconds = item.get("duration_seconds")
         if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds <= 0:
             item["duration_seconds"] = round(max(len(narration) / CHARS_PER_SECOND, 3.0), 2)
@@ -284,21 +393,16 @@ def claim_grounding_errors(package: Mapping[str, Any], fact_pack: Mapping[str, A
     return errors
 
 
-def generate_persian_story_package(
+def _finalize_package(
+    raw: Mapping[str, Any] | str,
     fact_pack: Mapping[str, Any],
     editorial: Mapping[str, Any],
-    *,
-    complete: Completer,
 ) -> dict[str, Any]:
-    """Ask the completer for a story package and ground-check the result."""
-
-    if fact_pack.get("status") != "READY":
-        raise GroundingError("fact pack is not READY")
-    if editorial.get("decision") != "APPROVE":
-        raise GroundingError("editorial decision is not APPROVE")
-    prompt = script_prompt(fact_pack, editorial)
-    raw = complete(prompt, {"fact_pack": fact_pack, "editorial": editorial})
-    package = normalize_story_package(parse_model_story_package(raw), fact_pack, editorial)
+    parsed = parse_model_story_package(raw)
+    early = structure_errors(parsed)
+    if early:
+        raise GroundingError("; ".join(early))
+    package = normalize_story_package(parsed, fact_pack, editorial)
     structural = validate_story_package_structure(package)
     if structural:
         raise GroundingError("; ".join(structural))
@@ -308,18 +412,80 @@ def generate_persian_story_package(
     return package
 
 
+def generate_persian_story_package(
+    fact_pack: Mapping[str, Any],
+    editorial: Mapping[str, Any],
+    *,
+    complete: Completer,
+) -> dict[str, Any]:
+    """Ask the completer for a story package and ground-check the result.
+
+    On invalid structure, performs at most one correction call with the
+    validation errors. Never invents missing narration scenes locally.
+    """
+
+    if fact_pack.get("status") != "READY":
+        raise GroundingError("fact pack is not READY")
+    if editorial.get("decision") != "APPROVE":
+        raise GroundingError("editorial decision is not APPROVE")
+
+    calls = 0
+    prompt = script_prompt(fact_pack, editorial)
+    raw = complete(prompt, {"fact_pack": fact_pack, "editorial": editorial, "attempt": 1})
+    calls += 1
+    try:
+        package = _finalize_package(raw, fact_pack, editorial)
+        package["_openai_script_calls"] = calls
+        return package
+    except GroundingError as first_error:
+        errors = [part.strip() for part in str(first_error).split(";") if part.strip()]
+        retry_prompt = correction_prompt(
+            fact_pack,
+            editorial,
+            previous=raw if isinstance(raw, Mapping) else str(raw),
+            errors=errors or [str(first_error)],
+        )
+        corrected = complete(
+            retry_prompt,
+            {
+                "fact_pack": fact_pack,
+                "editorial": editorial,
+                "attempt": 2,
+                "correction": True,
+                "previous_errors": errors,
+            },
+        )
+        calls += 1
+        try:
+            package = _finalize_package(corrected, fact_pack, editorial)
+        except GroundingError as second_error:
+            raise GroundingError(
+                f"story package invalid after correction attempt: {second_error} "
+                f"(openai_script_calls={calls})"
+            ) from second_error
+        package["_openai_script_calls"] = calls
+        return package
+
+
+def _public_package(package: Mapping[str, Any]) -> dict[str, Any]:
+    """Drop internal bookkeeping keys before persistence or pipeline handoff."""
+
+    return {key: value for key, value in package.items() if not str(key).startswith("_")}
+
+
 def pipeline_script_from_package(package: Mapping[str, Any]) -> dict[str, Any]:
     """Map a grounded story package onto the Reel pipeline script dict."""
 
-    scenes = [scene for scene in package.get("scenes") or [] if isinstance(scene, Mapping)]
+    public = _public_package(package)
+    scenes = [scene for scene in public.get("scenes") or [] if isinstance(scene, Mapping)]
     narration = " ".join(str(scene.get("narration") or "").strip() for scene in scenes)
-    caption = str(scenes[0].get("on_screen_text") if scenes else package.get("headline") or "").strip()
+    caption = str(scenes[0].get("on_screen_text") if scenes else public.get("headline") or "").strip()
     characters = len(narration)
     return {
         "status": "ready",
         "narration": narration,
         "caption": caption,
-        "angle": str(package.get("headline") or ""),
+        "angle": str(public.get("headline") or ""),
         "storyboard_json": json.dumps(
             [
                 {
@@ -334,8 +500,9 @@ def pipeline_script_from_package(package: Mapping[str, Any]) -> dict[str, Any]:
             ensure_ascii=False,
         ),
         "voice_estimate_usd": round(characters * ELEVENLABS_USD_PER_CHAR, 6),
-        "story_package": dict(package),
+        "story_package": public,
         "provider": "persian_grounded",
+        "openai_script_calls": int(package.get("_openai_script_calls") or 1),
     }
 
 
@@ -344,7 +511,10 @@ def write_story_package(package: Mapping[str, Any], destination: Path) -> Path:
 
     path = destination if destination.suffix == ".json" else destination / "story_package.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(_public_package(package), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return path
 
 

@@ -279,6 +279,8 @@ from app.reels.config import ReelConfig
 from app.reels.photos import (
     PhotoError,
     build_scene_photo_queries,
+    collect_scene_photos,
+    relaxed_relevance_terms,
     retrieve_licensed_photos_for_script,
 )
 from app.reels.pipeline import Candidate, run_generation
@@ -507,6 +509,112 @@ def test_irrelevant_metadata_is_rejected(tmp_path: Path, monkeypatch) -> None:
             tmp_path / "assets-irrelevant",
             transport=_openverse_transport(jpeg.read_bytes(), mode="irrelevant"),
         )
+
+
+def test_licensed_unrelated_photos_are_never_accepted(tmp_path: Path, monkeypatch) -> None:
+    """Licensed-any fallback is forbidden: relevance stays mandatory."""
+
+    jpeg = tmp_path / "seed.jpg"
+    _jpeg_bytes(jpeg)
+    monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
+    with pytest.raises(PhotoError, match="no downloadable licensed photograph"):
+        collect_scene_photos(
+            [["Kindergeld family benefits Germany"], ["calculator paperwork desk"]],
+            tmp_path / "assets-unrelated",
+            transport=_openverse_transport(jpeg.read_bytes(), mode="irrelevant"),
+            relevance_terms=[["Kindergeld", "family", "benefits"], ["calculator", "paperwork"]],
+        )
+
+
+def test_empty_relevance_terms_reject_all_candidates(tmp_path: Path, monkeypatch) -> None:
+    jpeg = tmp_path / "seed.jpg"
+    _jpeg_bytes(jpeg)
+    monkeypatch.setattr("app.reels.photos.time.sleep", lambda *_a, **_k: None)
+    with pytest.raises(PhotoError, match="no downloadable licensed photograph"):
+        collect_scene_photos(
+            [["Kindergeld Germany"]],
+            tmp_path / "assets-empty-terms",
+            transport=_openverse_transport(jpeg.read_bytes(), mode="ok"),
+            relevance_terms=[[]],
+        )
+
+
+def test_relaxed_relevance_keeps_concrete_scene_terms() -> None:
+    strict = ["close-up", "calculator", "paperwork", "desk", "Germany", "photograph"]
+    relaxed = relaxed_relevance_terms(strict, ["calculator paperwork desk", "calculator Germany"])
+    assert "calculator" in [item.casefold() for item in relaxed]
+    assert "close-up" not in [item.casefold() for item in relaxed]
+    assert relaxed  # never relaxes to an empty accept-all list
+
+
+def test_searchable_visual_queries_prefer_short_noun_phrases() -> None:
+    from app.reels.photos import searchable_visual_queries
+
+    queries = searchable_visual_queries("a thoughtful person looking at a car factory")
+    assert queries[0].casefold() == "car factory"
+    assert "car factory Germany" in queries
+    assert queries[-1].startswith("a thoughtful") or "thoughtful" in queries[-2].casefold()
+
+    auto = build_scene_photo_queries(
+        "Bilger fordert Bekenntnis der Autoindustrie zu Deutschland",
+        "Autokonzerne und neue Verbrenner in Germany.",
+        {
+            "story_package": {
+                "scenes": [
+                    {
+                        "number": 1,
+                        "duration_seconds": 3,
+                        "narration": "خبر",
+                        "on_screen_text": "۱",
+                        "visual_prompt": "a thoughtful person looking at a car factory",
+                    }
+                ]
+            }
+        },
+    )
+    flat = " ".join(auto[0]).casefold()
+    assert "car factory" in flat
+    assert "assembly line" in flat or "automobile factory" in flat
+
+
+def test_photo_failure_blocks_voice_before_elevenlabs(tmp_path: Path) -> None:
+    config = _reel_config(tmp_path)
+    store = ReelStore(config.database_path)
+    now = datetime(2026, 11, 21, 16, 0, tzinfo=timezone.utc)
+    candidate = Candidate(
+        title="Kindergeld rises to 259 euro",
+        summary="Families in Germany keep Kindergeld.",
+        url="https://example.com/kindergeld-photo-gate",
+        publisher="Bundesregierung",
+        published_at=now,
+        category="family",
+    )
+    voice_calls = {"n": 0}
+
+    def narrate(text, voice_id):
+        voice_calls["n"] += 1
+        raise AssertionError("ElevenLabs must not run without relevant photographs")
+
+    result = run_generation(
+        config,
+        store,
+        now=now,
+        scheduled=False,
+        candidates=[candidate],
+        verify_source=lambda item: {"ok": True, "excerpt": item.summary},
+        write_script=lambda candidate, checked, paid_generation: _story_script(
+            title_hint="Kindergeld", scenes=2
+        ),
+        find_assets=lambda candidate, script: (_ for _ in ()).throw(
+            PhotoError("no downloadable licensed photograph for scene 1")
+        ),
+        narrate=narrate,
+        render_video=lambda *a, **k: (_ for _ in ()).throw(AssertionError("render must not run")),
+        probe_video=lambda path: (_ for _ in ()).throw(AssertionError("probe must not run")),
+    )
+    assert result.status == "failed"
+    assert "photograph" in (result.message or "").lower()
+    assert voice_calls["n"] == 0
 
 
 def test_missing_license_url_is_rejected(tmp_path: Path, monkeypatch) -> None:

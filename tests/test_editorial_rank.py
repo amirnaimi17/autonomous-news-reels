@@ -13,9 +13,11 @@ from app.reels.config import ReelConfig
 from app.reels.pipeline import Candidate, run_generation, select_story
 from app.reels.store import ReelStore
 from app.services.news.editorial_rank import (
+    EDITORIAL_RANKING_JSON_SCHEMA,
     assign_article_ids,
     parse_ranking_response,
     rank_retrieved_articles,
+    ranking_structure_errors,
 )
 
 
@@ -264,6 +266,43 @@ def test_rank_retrieved_articles_returns_top_three(tmp_path: Path) -> None:
     assert ranking.top[0].url == "https://example.com/wage"
     assert ranking.top[1].url == "https://example.com/rent"
     assert all(item.url.startswith("https://example.com/") for item in ranking.top)
+
+
+def test_rank_selects_top_suitable_when_selected_id_null() -> None:
+    now = datetime(2026, 11, 21, 10, 0, tzinfo=timezone.utc)
+    candidates = [
+        _candidate("Mindestlohn rises", "https://example.com/wage-null", "Workers in Germany.", now),
+        _candidate("Sports final", "https://example.com/sport-null", "Match result.", now),
+    ]
+
+    def complete(prompt: str, context=None, **kwargs):
+        return {
+            "rankings": [
+                {
+                    "id": "c01",
+                    "score": 0.88,
+                    "relevance": "Wage floor.",
+                    "practical_impact": "Income.",
+                    "newsworthiness": "Policy.",
+                    "audience_interest": "Work.",
+                    "freshness": "Now.",
+                    "suitable": True,
+                },
+                {
+                    "id": "c02",
+                    "score": 0.1,
+                    "relevance": "Sports.",
+                    "suitable": False,
+                },
+            ],
+            "selected_id": None,
+            "rejection_reason": "",
+        }
+
+    ranking = rank_retrieved_articles(candidates, complete=complete)
+    assert ranking.status == "selected"
+    assert ranking.selected_id == "c01"
+    assert ranking.selected.url == "https://example.com/wage-null"
 
 
 def test_rank_rejects_when_none_suitable() -> None:
@@ -598,6 +637,100 @@ def test_rank_news_cli_prints_top_three_without_media(tmp_path: Path, monkeypatc
         lambda **kwargs: 0 if kwargs.get("limit") == 20 else 1,
     )
     assert main(["rank-news", "--limit", "20"]) == 0
+
+
+def test_ranking_structure_errors_missing_or_object() -> None:
+    assert any("missing" in item for item in ranking_structure_errors({}))
+    assert any("list" in item for item in ranking_structure_errors({"rankings": {"1": {}}}))
+    assert ranking_structure_errors({"rankings": [{"id": "c01"}]}) == []
+
+
+def test_rank_correction_succeeds_after_invalid_shape(tmp_path: Path) -> None:
+    now = datetime(2026, 11, 21, 10, 0, tzinfo=timezone.utc)
+    candidates = [
+        _candidate("Mindestlohn rises", "https://example.com/wage-fix", "Workers in Germany.", now),
+    ]
+    good = {
+        "rankings": [
+            {
+                "id": "c01",
+                "score": 0.9,
+                "relevance": "Wage floor.",
+                "practical_impact": "Income.",
+                "newsworthiness": "Policy.",
+                "audience_interest": "Work.",
+                "freshness": "Now.",
+                "suitable": True,
+            }
+        ],
+        "selected_id": "c01",
+        "rejection_reason": "",
+    }
+    responses = [{"selected_id": "c01", "rejection_reason": ""}, good]
+    prompts: list[str] = []
+
+    def complete(prompt: str, context=None, **kwargs):
+        prompts.append(prompt)
+        return responses.pop(0)
+
+    ranking = rank_retrieved_articles(candidates, complete=complete)
+    assert ranking.status == "selected"
+    assert ranking.selected_id == "c01"
+    assert "VALIDATION_ERRORS" in prompts[1]
+    assert "missing rankings" in prompts[1]
+
+
+def test_rank_correction_fails_after_second_invalid_response() -> None:
+    now = datetime(2026, 11, 21, 10, 0, tzinfo=timezone.utc)
+    candidates = [
+        _candidate("Sports only", "https://example.com/sport-fix", "Match result.", now),
+    ]
+    calls = {"n": 0}
+
+    def complete(prompt: str, context=None, **kwargs):
+        calls["n"] += 1
+        return {"selected_id": None, "rejection_reason": "x"}
+
+    with pytest.raises(GroundingError, match="after correction"):
+        rank_retrieved_articles(candidates, complete=complete)
+    assert calls["n"] == 2
+
+
+def test_live_ranking_uses_ranking_schema_not_story_package(monkeypatch) -> None:
+    """Regression: story-package json_schema must never be applied to ranking."""
+
+    now = datetime(2026, 11, 21, 10, 0, tzinfo=timezone.utc)
+    candidates = [
+        _candidate("Rent news", "https://example.com/rent-schema", "Tenants in Germany.", now),
+    ]
+    captured: dict = {}
+
+    def fake_complete(prompt: str, context=None, **kwargs):
+        captured.update(kwargs)
+        return {
+            "rankings": [
+                {
+                    "id": "c01",
+                    "score": 0.9,
+                    "relevance": "Housing.",
+                    "practical_impact": "Rent.",
+                    "newsworthiness": "Policy.",
+                    "audience_interest": "Housing.",
+                    "freshness": "Now.",
+                    "suitable": True,
+                }
+            ],
+            "selected_id": "c01",
+            "rejection_reason": "",
+        }
+
+    monkeypatch.setattr("app.services.news.editorial_rank.complete_chat", fake_complete)
+    ranking = rank_retrieved_articles(candidates, complete=None, api_key="unit-test")
+    assert ranking.status == "selected"
+    assert captured.get("json_schema") == EDITORIAL_RANKING_JSON_SCHEMA
+    assert captured.get("schema_name") == "editorial_ranking"
+    assert captured.get("use_json_schema") is False
+    assert "scenes" not in (captured.get("json_schema") or {}).get("properties", {})
 
 
 def test_load_reel_config_min_score_override(monkeypatch, tmp_path: Path) -> None:
