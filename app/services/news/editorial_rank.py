@@ -18,7 +18,54 @@ from app.services.llm.openai_script import DEFAULT_MODEL, complete_chat
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_AUDIENCES_FILE = ROOT / "config" / "editorial_audiences.json"
 
+# Approximate public Chat Completions prices for cost reporting only.
+_MODEL_USD_PER_MTOKEN = {
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "gpt-4o": {"input": 2.50, "output": 10.00},
+}
+
 CompleteFn = Callable[..., dict[str, Any]]
+
+
+def estimate_tokens_from_text(text: str) -> int:
+    """Rough token estimate without a tokenizer dependency (~4 chars/token)."""
+
+    return max(1, (len(text or "") + 3) // 4)
+
+
+def estimate_ranking_usage(prompt: str, *, model: str, expected_output_tokens: int = 700) -> dict[str, Any]:
+    """Estimate OpenAI ranking cost before a live call is approved."""
+
+    rates = _MODEL_USD_PER_MTOKEN.get(model) or _MODEL_USD_PER_MTOKEN["gpt-4o-mini"]
+    input_tokens = estimate_tokens_from_text(prompt)
+    output_tokens = max(1, int(expected_output_tokens))
+    usd = (input_tokens * rates["input"] + output_tokens * rates["output"]) / 1_000_000
+    return {
+        "model": model,
+        "input_tokens_est": input_tokens,
+        "output_tokens_est": output_tokens,
+        "usd_est": round(usd, 6),
+        "pricing_note": "estimate only; not a bill",
+    }
+
+
+def usage_from_openai_payload(payload: Mapping[str, Any], *, model: str) -> dict[str, Any]:
+    """Prefer API usage when present; otherwise return an empty usage object."""
+
+    usage = payload.get("usage") if isinstance(payload, Mapping) else None
+    if not isinstance(usage, Mapping):
+        return {"model": model, "input_tokens": None, "output_tokens": None, "usd_est": None}
+    input_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    rates = _MODEL_USD_PER_MTOKEN.get(model) or _MODEL_USD_PER_MTOKEN["gpt-4o-mini"]
+    usd = (input_tokens * rates["input"] + output_tokens * rates["output"]) / 1_000_000
+    return {
+        "model": model,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "usd_est": round(usd, 6),
+        "pricing_note": "derived from API usage fields when present",
+    }
 
 
 @dataclass(frozen=True)
@@ -56,6 +103,8 @@ class EditorialRanking:
     selected_id: str = ""
     selected: RankedCandidate | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    usage: dict[str, Any] = field(default_factory=dict)
+    min_score: float = 0.0
 
     def as_detail(self) -> dict[str, Any]:
         return {
@@ -63,6 +112,8 @@ class EditorialRanking:
             "message": self.message,
             "audience_id": self.audience_id,
             "selected_id": self.selected_id,
+            "min_score": self.min_score,
+            "usage": self.usage,
             "top": [
                 {
                     "id": item.article_id,
@@ -284,6 +335,7 @@ def parse_ranking_response(
             selected_id=selected.article_id,
             selected=selected,
             raw=dict(payload),
+            min_score=min_score,
         )
 
     message = rejection or "no suitable article for this audience"
@@ -295,7 +347,37 @@ def parse_ranking_response(
         selected_id="",
         selected=None,
         raw=dict(payload),
+        min_score=min_score,
     )
+
+
+def prepare_ranking_request(
+    candidates: Sequence[Any],
+    *,
+    audience_id: str = "iranians_in_germany",
+    audiences_file: Path | None = None,
+    min_score: float | None = None,
+    now: datetime | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Build prompt + usage estimate without calling OpenAI."""
+
+    if not candidates:
+        raise GroundingError("no retrieved articles to rank")
+    profile = get_audience_profile(audience_id, path=audiences_file)
+    threshold = float(min_score if min_score is not None else profile.min_score)
+    moment = now or datetime.now(timezone.utc)
+    rows = assign_article_ids(candidates)
+    chosen_model = (model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    prompt = build_ranking_prompt(rows, profile, now=moment, min_score=threshold)
+    return {
+        "profile": profile,
+        "min_score": threshold,
+        "model": chosen_model,
+        "rows": rows,
+        "prompt": prompt,
+        "usage_estimate": estimate_ranking_usage(prompt, model=chosen_model),
+    }
 
 
 def rank_retrieved_articles(
@@ -318,20 +400,40 @@ def rank_retrieved_articles(
             message="no retrieved articles to rank",
             audience_id=audience_id,
         )
-    profile = get_audience_profile(audience_id, path=audiences_file)
-    threshold = float(min_score if min_score is not None else profile.min_score)
-    moment = now or datetime.now(timezone.utc)
-    rows = assign_article_ids(candidates)
+    prepared = prepare_ranking_request(
+        candidates,
+        audience_id=audience_id,
+        audiences_file=audiences_file,
+        min_score=min_score,
+        now=now,
+        model=model,
+    )
+    threshold = float(prepared["min_score"])
+    rows = prepared["rows"]
     by_id = {row["id"]: row for row in rows}
-    prompt = build_ranking_prompt(rows, profile, now=moment, min_score=threshold)
+    prompt = prepared["prompt"]
+    chosen_model = prepared["model"]
+    usage = dict(prepared["usage_estimate"])
     completer = complete or complete_chat
-    kwargs: dict[str, Any] = {"model": model or DEFAULT_MODEL}
+    kwargs: dict[str, Any] = {"model": chosen_model}
     if complete is None:
         kwargs["api_key"] = api_key
         kwargs["transport"] = transport
     payload = completer(prompt, {"audience_id": audience_id, "article_ids": list(by_id)}, **kwargs)
     if not isinstance(payload, Mapping):
         raise GroundingError("editorial ranking response must be a JSON object")
-    result = parse_ranking_response(payload, by_id, min_score=threshold)
+    # Injected completes may return either the assistant JSON or {"content": ..., "usage": ...}.
+    if "rankings" in payload:
+        content = payload
+        if isinstance(payload.get("_usage"), Mapping):
+            usage = usage_from_openai_payload({"usage": payload["_usage"]}, model=chosen_model)
+    elif isinstance(payload.get("content"), Mapping):
+        content = payload["content"]
+        usage = usage_from_openai_payload(payload, model=chosen_model) if payload.get("usage") else usage
+    else:
+        content = payload
+    result = parse_ranking_response(content, by_id, min_score=threshold)
     result.audience_id = audience_id
+    result.usage = usage
+    result.min_score = threshold
     return result

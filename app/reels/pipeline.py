@@ -208,8 +208,13 @@ def select_story_ai(
     from app.core.exceptions import ConfigurationError, GroundingError
 
     profile = get_audience_profile(config.editorial_audience_id, path=config.editorial_audiences_file)
-    threshold = config.editorial_min_score if config.editorial_min_score > 0 else profile.min_score
-    detail = {"selection": "ai", "eligible": len(eligible)}
+    # Profile min_score wins unless REEL_EDITORIAL_MIN_SCORE is explicitly set.
+    threshold = (
+        float(config.editorial_min_score)
+        if config.editorial_min_score is not None
+        else float(profile.min_score)
+    )
+    detail = {"selection": "ai", "eligible": len(eligible), "min_score": threshold}
     try:
         ranking = rank_retrieved_articles(
             eligible,

@@ -30,7 +30,7 @@ def _config(tmp_path: Path, **overrides) -> ReelConfig:
                         "label": "Persian-speaking residents of Germany",
                         "content_categories": ["housing_and_rent", "work_and_wages"],
                         "selection_notes": ["Do not require Iran mentions."],
-                        "min_score": 0.55,
+                        "min_score": 0.60,
                     }
                 }
             )
@@ -67,7 +67,7 @@ def _config(tmp_path: Path, **overrides) -> ReelConfig:
         editorial_rank_provider="openai",
         editorial_rank_approved=True,
         editorial_audience_id="iranians_in_germany",
-        editorial_min_score=0.55,
+        editorial_min_score=None,
         editorial_audiences_file=audiences,
     )
     base.update(overrides)
@@ -83,6 +83,92 @@ def _candidate(title: str, url: str, summary: str, when: datetime) -> Candidate:
         published_at=when,
         category="policy",
     )
+
+
+def test_profile_min_score_used_unless_explicitly_overridden(tmp_path: Path) -> None:
+    audiences = tmp_path / "audiences.json"
+    audiences.write_text(
+        json.dumps(
+            {
+                "iranians_in_germany": {
+                    "id": "iranians_in_germany",
+                    "label": "Persian-speaking residents of Germany",
+                    "min_score": 0.72,
+                    "content_categories": ["housing_and_rent"],
+                    "selection_notes": [],
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    now = datetime(2026, 11, 21, 10, 0, tzinfo=timezone.utc)
+    candidates = [
+        _candidate("Rent news", "https://example.com/rent-score", "Tenants in Germany.", now),
+    ]
+
+    def complete_reject(prompt: str, context=None, **kwargs):
+        assert "Minimum suitable score: 0.72" in prompt
+        return {
+            "rankings": [
+                {
+                    "id": "c01",
+                    "score": 0.65,
+                    "relevance": "Housing.",
+                    "suitable": True,
+                }
+            ],
+            "selected_id": "c01",
+            "rejection_reason": "",
+        }
+
+    from app.services.news.editorial_rank import prepare_ranking_request, rank_retrieved_articles
+
+    prepared = prepare_ranking_request(
+        candidates,
+        audiences_file=audiences,
+        min_score=None,
+    )
+    assert prepared["min_score"] == 0.72
+    assert prepared["profile"].min_score == 0.72
+
+    # Score 0.65 is below profile 0.72 → unsuitable even if model marked suitable.
+    ranking = rank_retrieved_articles(
+        candidates,
+        audiences_file=audiences,
+        min_score=None,
+        complete=complete_reject,
+    )
+    assert ranking.status == "rejected"
+    assert ranking.min_score == 0.72
+
+    def complete_ok(prompt: str, context=None, **kwargs):
+        assert "Minimum suitable score: 0.40" in prompt
+        return {
+            "rankings": [
+                {
+                    "id": "c01",
+                    "score": 0.65,
+                    "relevance": "Housing.",
+                    "practical_impact": "Rent.",
+                    "newsworthiness": "Policy.",
+                    "audience_interest": "Housing.",
+                    "freshness": "Now.",
+                    "suitable": True,
+                }
+            ],
+            "selected_id": "c01",
+            "rejection_reason": "",
+        }
+
+    overridden = rank_retrieved_articles(
+        candidates,
+        audiences_file=audiences,
+        min_score=0.40,
+        complete=complete_ok,
+    )
+    assert overridden.status == "selected"
+    assert overridden.min_score == 0.40
 
 
 def test_assign_ids_and_reject_invented_ids() -> None:
@@ -416,3 +502,112 @@ def test_duplicate_still_blocks_ai_selection(tmp_path: Path) -> None:
     )
     assert second[0] is None
     assert second[1] == "duplicate"
+
+
+def test_rank_news_cli_prints_top_three_without_media(tmp_path: Path, monkeypatch, capsys) -> None:
+    from app.cli import main
+    from app.reels.commands import rank_news_command
+
+    config = _config(tmp_path, editorial_rank_provider="openai", editorial_rank_approved=False)
+    now = datetime(2026, 11, 21, 10, 0, tzinfo=timezone.utc)
+    candidates = [
+        _candidate(
+            "Mietpreisbremse extended",
+            "https://example.com/rent-cli",
+            "Tenants in Germany keep rent protections.",
+            now,
+        ),
+        _candidate(
+            "Sports score",
+            "https://example.com/sport-cli",
+            "Football results.",
+            now,
+        ),
+        _candidate(
+            "Mindestlohn rises",
+            "https://example.com/wage-cli",
+            "Workers in Germany receive a higher wage floor.",
+            now,
+        ),
+    ]
+
+    monkeypatch.setattr("app.reels.commands.discover_candidates", lambda cfg, moment: candidates)
+    monkeypatch.setattr("app.reels.commands.load_reel_config", lambda: config)
+
+    # Without approve: estimate only, no LLM.
+    code = rank_news_command(limit=20, approve=False, now=now, config=config)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "usage_estimate:" in out
+    assert "editorial ranking not approved" in out
+    assert "no OpenAI call was made" in out
+
+    calls = {"n": 0}
+
+    def complete(prompt: str, context=None, **kwargs):
+        calls["n"] += 1
+        return {
+            "rankings": [
+                {
+                    "id": "c03",
+                    "score": 0.93,
+                    "relevance": "Wage floor for workers.",
+                    "practical_impact": "Income.",
+                    "newsworthiness": "Policy.",
+                    "audience_interest": "Work.",
+                    "freshness": "Now.",
+                    "suitable": True,
+                },
+                {
+                    "id": "c01",
+                    "score": 0.81,
+                    "relevance": "Housing protections.",
+                    "practical_impact": "Rent.",
+                    "newsworthiness": "Law.",
+                    "audience_interest": "Housing.",
+                    "freshness": "Now.",
+                    "suitable": True,
+                },
+                {
+                    "id": "c02",
+                    "score": 0.1,
+                    "relevance": "Sports.",
+                    "suitable": False,
+                },
+            ],
+            "selected_id": "c03",
+            "rejection_reason": "",
+        }
+
+    code = rank_news_command(limit=20, approve=True, now=now, config=config, complete=complete)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert calls["n"] == 1
+    assert "editorial_top3:" in out
+    assert "https://example.com/wage-cli" in out
+    assert "https://example.com/rent-cli" in out
+    assert "score=0.93" in out
+    assert "relevance: Wage floor" in out
+    # No media pipeline markers.
+    assert "ElevenLabs" not in out
+    assert "Remotion" not in out
+
+    # CLI wiring
+    monkeypatch.setattr(
+        "app.reels.commands.rank_news_command",
+        lambda **kwargs: 0 if kwargs.get("limit") == 20 else 1,
+    )
+    assert main(["rank-news", "--limit", "20"]) == 0
+
+
+def test_load_reel_config_min_score_override(monkeypatch, tmp_path: Path) -> None:
+    from app.reels.config import load_reel_config
+
+    monkeypatch.setenv("REEL_WORKING_DIRECTORY", str(tmp_path))
+    monkeypatch.delenv("REEL_EDITORIAL_MIN_SCORE", raising=False)
+    config = load_reel_config()
+    assert config.editorial_min_score is None
+
+    monkeypatch.setenv("REEL_EDITORIAL_MIN_SCORE", "0.41")
+    config = load_reel_config()
+    assert config.editorial_min_score == 0.41

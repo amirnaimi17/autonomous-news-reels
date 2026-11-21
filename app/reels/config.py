@@ -19,6 +19,17 @@ def _flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_float(raw: str | None) -> float | None:
+    """Parse an optional float env value. Missing/blank means “use audience profile”."""
+
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    return float(text)
+
+
 def _hours(value: str) -> tuple[int, ...]:
     hours: list[int] = []
     for part in value.split(","):
@@ -67,7 +78,7 @@ class ReelConfig:
     editorial_rank_provider: str
     editorial_rank_approved: bool
     editorial_audience_id: str
-    editorial_min_score: float
+    editorial_min_score: float | None
     editorial_audiences_file: Path
 
     @property
@@ -120,7 +131,7 @@ def load_reel_config() -> ReelConfig:
             os.getenv("REEL_EDITORIAL_AUDIENCE_ID", "iranians_in_germany").strip()
             or "iranians_in_germany"
         ),
-        editorial_min_score=float(os.getenv("REEL_EDITORIAL_MIN_SCORE", "0.55")),
+        editorial_min_score=_optional_float(os.getenv("REEL_EDITORIAL_MIN_SCORE")),
         editorial_audiences_file=Path(
             os.getenv(
                 "REEL_EDITORIAL_AUDIENCES_FILE",
