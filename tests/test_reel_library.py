@@ -41,6 +41,11 @@ def _config(tmp_path) -> ReelConfig:
         script_output_dir=tmp_path / "scripts",
         elevenlabs_approved=False,
         audio_output_dir=tmp_path / "audio",
+        editorial_rank_provider="off",
+        editorial_rank_approved=False,
+        editorial_audience_id="iranians_in_germany",
+        editorial_min_score=0.55,
+        editorial_audiences_file=tmp_path / "editorial_audiences.json",
     )
 
 

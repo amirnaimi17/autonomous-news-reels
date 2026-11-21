@@ -64,6 +64,11 @@ class ReelConfig:
     script_output_dir: Path
     elevenlabs_approved: bool
     audio_output_dir: Path
+    editorial_rank_provider: str
+    editorial_rank_approved: bool
+    editorial_audience_id: str
+    editorial_min_score: float
+    editorial_audiences_file: Path
 
     @property
     def zone(self) -> ZoneInfo:
@@ -106,5 +111,20 @@ def load_reel_config() -> ReelConfig:
         elevenlabs_approved=_flag("REEL_ELEVENLABS_APPROVED", False),
         audio_output_dir=Path(
             os.getenv("REEL_AUDIO_OUTPUT_DIR", root / "storage" / "generated" / "reels" / "audio")
+        ),
+        editorial_rank_provider=(
+            os.getenv("REEL_EDITORIAL_RANK_PROVIDER", "off").strip().lower() or "off"
+        ),
+        editorial_rank_approved=_flag("REEL_EDITORIAL_RANK_APPROVED", False),
+        editorial_audience_id=(
+            os.getenv("REEL_EDITORIAL_AUDIENCE_ID", "iranians_in_germany").strip()
+            or "iranians_in_germany"
+        ),
+        editorial_min_score=float(os.getenv("REEL_EDITORIAL_MIN_SCORE", "0.55")),
+        editorial_audiences_file=Path(
+            os.getenv(
+                "REEL_EDITORIAL_AUDIENCES_FILE",
+                root / "config" / "editorial_audiences.json",
+            )
         ),
     )

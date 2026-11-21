@@ -98,13 +98,28 @@ def generate_reel_command(*, scheduled: bool, target: str, now: datetime | None 
             result_status = "queued"
         else:
             result_status = result.status
+        ranking = (result.detail or {}).get("ranking") if isinstance(result.detail, dict) else None
         store.add_cron_log(
             job_name="generate_scheduled_reel" if scheduled else "generate_reel",
             status=result_status,
             message=result.message or result.reel_id,
-            detail={"reel_id": result.reel_id, "scheduled": scheduled},
+            detail={
+                "reel_id": result.reel_id,
+                "scheduled": scheduled,
+                "selection": (result.detail or {}).get("selection") if isinstance(result.detail, dict) else None,
+                "ranking_top": (ranking or {}).get("top") if isinstance(ranking, dict) else None,
+            },
             now=moment,
         )
+        if isinstance(ranking, dict) and ranking.get("top"):
+            print("editorial_top3:")
+            for item in ranking["top"][:3]:
+                print(
+                    f"  - score={item.get('score')} suitable={item.get('suitable')} "
+                    f"{item.get('title')} | {item.get('url')}"
+                )
+                if item.get("relevance"):
+                    print(f"    relevance: {item.get('relevance')}")
         print(f"{result_status}: {result.message or result.reel_id}")
         return 0 if result_status != "failed" else 1
     finally:
@@ -750,4 +765,9 @@ def _with_target(config: ReelConfig, target: str) -> ReelConfig:
         script_output_dir=config.script_output_dir,
         elevenlabs_approved=config.elevenlabs_approved,
         audio_output_dir=config.audio_output_dir,
+        editorial_rank_provider=config.editorial_rank_provider,
+        editorial_rank_approved=config.editorial_rank_approved,
+        editorial_audience_id=config.editorial_audience_id,
+        editorial_min_score=config.editorial_min_score,
+        editorial_audiences_file=config.editorial_audiences_file,
     )
