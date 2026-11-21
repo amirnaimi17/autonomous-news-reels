@@ -10,7 +10,7 @@ A standalone Python application that discovers recent news, chooses distinct sto
 | 2 | News research, selection, 72-hour rule, duplicate clustering | Implemented. Selection does not start production. |
 | 3 | Script-writing agent | Persian grounded scripts via `write_grounded_script`. Pilot fact-pack / editorial / `story_package.json` contracts are reused. OpenAI chat is optional and mockable; extractive English fallback remains for the older `ScriptRequest` path. |
 | 4 | Image and voice agents | Persian TTS via ElevenLabs Aran is wired through the existing `persian-tts` client (`narrate_aran`). Live HTTP requires explicit opt-in. Image generation is still later. |
-| 5 | FFmpeg reel render and file validation | Not started. Encoder selection and the acceptance rules exist. |
+| 5 | FFmpeg / Remotion reel render | Remotion `DataReel` render path is wired (`render-reel` CLI + `render_with_remotion`). Validates 1080×1920 H.264/AAC with ffprobe. |
 | 6 | Telegram, scheduler, restart recovery of a live run | Not started. The database locks and slot heartbeat exist. |
 | 7 | End-to-end runs and deployment verification | Not started |
 
@@ -79,6 +79,19 @@ export ELEVENLABS_API_KEY=...   # from your private shell / .env, never commit
 ```
 
 Do not set `REEL_PAID_GENERATION=true` for a voice-only check: that path also attempts Remotion video render. Prefer `speak-narration`.
+
+### Phase 5 Remotion render
+
+Isolated render (no OpenAI, no ElevenLabs). Needs a local `story_package.json` and an MP3:
+
+```bash
+.venv/bin/python -m app.cli render-reel \
+  --story-package tests/fixtures/reel_render/story_package.json \
+  --audio storage/generated/reels/audio/phase5-fixture.mp3 \
+  --out storage/generated/reels/phase5-fixture.mp4
+```
+
+Optional `--asset path.jpg` (repeatable) supplies photographs in scene order. Without assets, navy graphic plates are generated. Existing MP4 paths are not overwritten unless `--overwrite` is passed.
 
 `INSTAGRAM_PUBLISH_ENABLED` must stay `false`. Setting it to `true` stops the process, because no publisher is installed.
 

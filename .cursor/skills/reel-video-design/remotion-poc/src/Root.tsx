@@ -20,7 +20,7 @@ export const RemotionRoot: React.FC = () => {
         fps={30}
         width={1080}
         height={1920}
-        defaultProps={{scenes: [] as DataScene[]}}
+        defaultProps={{scenes: [] as DataScene[], audioFile: undefined as string | undefined}}
         calculateMetadata={({props}) => ({durationInFrames: dataReelDuration(props.scenes), props})}
       />
     </>

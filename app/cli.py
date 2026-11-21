@@ -50,6 +50,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Explicitly allow one live ElevenLabs request (requires ELEVENLABS_API_KEY)",
     )
+    render = sub.add_parser(
+        "render-reel",
+        help="Render-only Remotion DataReel from story_package.json + local MP3 (no OpenAI/ElevenLabs)",
+    )
+    render.add_argument("--story-package", type=Path, required=True)
+    render.add_argument("--audio", type=Path, required=True, help="Local narration MP3")
+    render.add_argument("--out", type=Path, default=None, help="Output MP4 under storage/generated/reels/")
+    render.add_argument(
+        "--asset",
+        type=Path,
+        action="append",
+        default=[],
+        help="Optional local image for a scene (repeatable, scene order)",
+    )
+    render.add_argument("--overwrite", action="store_true", help="Allow replacing an existing MP4")
     sub.add_parser("upload-outbox", help="Upload queued packages. Retains failures locally.")
     sub.add_parser("import-library", help="Record the Reels already rendered in this project")
     install = sub.add_parser("install-cron", help="Write the four Berlin generation cron lines")
@@ -69,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         "generate-reel",
         "deliver-existing",
         "speak-narration",
+        "render-reel",
         "upload-outbox",
         "import-library",
         "install-cron",
@@ -102,6 +118,7 @@ def _reel_command(args: argparse.Namespace) -> int:
         generate_reel_command,
         install_cron_command,
         remove_cron_command,
+        render_reel_command,
         speak_narration_command,
         status_command,
         upload_outbox_command,
@@ -127,6 +144,14 @@ def _reel_command(args: argparse.Namespace) -> int:
             out=args.out,
             approve=args.approve,
             voice_id=args.voice_id,
+        )
+    if args.command == "render-reel":
+        return render_reel_command(
+            story_package=args.story_package,
+            audio=args.audio,
+            out=args.out,
+            asset=args.asset,
+            overwrite=args.overwrite,
         )
     if args.command == "upload-outbox":
         return upload_outbox_command()

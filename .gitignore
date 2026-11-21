@@ -20,3 +20,6 @@ storage/generated/*
 !storage/**/.gitkeep
 .cursor/skills/reel-video-design/.tools/
 .cursor/skills/reel-video-design/remotion-poc/node_modules/
+
+# Remotion staged render inputs
+.cursor/skills/reel-video-design/remotion-poc/public/runtime/
