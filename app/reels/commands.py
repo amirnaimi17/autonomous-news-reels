@@ -475,16 +475,23 @@ def write_grounded_script(
     paid_generation: bool,
     complete=None,
     config: ReelConfig | None = None,
+    review_complete=None,
+    rewrite_complete=None,
 ) -> dict:
     """Write a grounded Persian ``story_package`` for the Reel pipeline.
 
-    Script generation reuses the pilot fact-pack and editorial contracts. The
-    OpenAI chat call is optional and injectable. Voice and video stay behind
-    ``REEL_PAID_GENERATION`` in ``run_generation``; this function never calls
-    ElevenLabs.
+    Script generation reuses the pilot fact-pack and editorial contracts. When
+    narration review is enabled, quality review (+ one rewrite) runs here before
+    the script is returned — so photos, ElevenLabs, and Remotion never see a
+    rejected draft. Voice and video stay behind ``REEL_PAID_GENERATION``.
     """
 
     from app.core.exceptions import ConfigurationError, GroundingError
+    from app.services.llm.narration_review import (
+        NarrationReviewThresholds,
+        review_and_refine_story_package,
+        write_narration_review_artifacts,
+    )
     from app.services.llm.openai_script import complete_chat
     from app.services.llm.persian_script import (
         build_editorial_brief,
@@ -532,6 +539,57 @@ def write_grounded_script(
         # Invalid packages never continue to photo retrieval, ElevenLabs, or Remotion.
         return {"status": "rejected", "message": str(exc) or exc.__class__.__name__}
 
+    narration_review = None
+    review_enabled = bool(settings.narration_review_enabled) and (
+        (settings.narration_review_provider or "off").strip().lower() == "openai"
+        or review_complete is not None
+    )
+    if review_enabled:
+        thresholds = NarrationReviewThresholds(
+            min_overall=float(settings.narration_review_min_score),
+            min_hook=float(settings.narration_review_hook_min_score),
+            min_curiosity=float(settings.narration_review_curiosity_min_score),
+            max_rewrites=int(settings.narration_review_max_rewrites),
+        )
+        budget = max(0.0, float(settings.per_reel_max_usd) - float(pipeline_script_from_package(package).get("voice_estimate_usd") or 0))
+        try:
+            narration_review = review_and_refine_story_package(
+                fact_pack=fact_pack,
+                editorial=editorial,
+                package=package,
+                title=candidate.title,
+                source_url=candidate.url,
+                audience_label=str(package.get("audience") or "Iranians living in Germany"),
+                thresholds=thresholds,
+                glossary_path=settings.narration_glossary_file,
+                model=settings.script_model,
+                review_complete=review_complete,
+                rewrite_complete=rewrite_complete or completer,
+                budget_usd=budget if budget > 0 else float(settings.per_reel_max_usd),
+            )
+        except ConfigurationError as exc:
+            return {"status": "blocked_paid" if not paid_generation else "rejected", "message": str(exc)}
+        except (GroundingError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            return {"status": "rejected", "message": str(exc) or exc.__class__.__name__}
+        print(narration_review.cli_summary())
+        if not narration_review.approved:
+            destination = settings.script_output_dir / fact_pack["event_id"]
+            review_path = write_narration_review_artifacts(narration_review, destination)
+            write_story_package(
+                narration_review.original_package,
+                destination / "story_package.original.json",
+            )
+            return {
+                "status": "rejected",
+                "message": f"narration quality rejected: {narration_review.reason}",
+                "fact_pack": fact_pack,
+                "editorial_review": editorial,
+                "narration_review": narration_review.as_detail(),
+                "narration_review_path": str(review_path),
+                "narration_review_summary": narration_review.cli_summary(),
+            }
+        package = narration_review.package
+
     result = pipeline_script_from_package(package)
     result["fact_pack"] = fact_pack
     result["editorial_review"] = editorial
@@ -539,6 +597,12 @@ def write_grounded_script(
     result["story_package_path"] = str(write_story_package(package, destination))
     write_story_package(fact_pack, destination / "fact_pack.json")
     write_story_package(editorial, destination / "editorial_review.json")
+    if narration_review is not None:
+        result["narration_review"] = narration_review.as_detail()
+        result["narration_review_path"] = str(write_narration_review_artifacts(narration_review, destination))
+        result["narration_review_summary"] = narration_review.cli_summary()
+        if narration_review.original_package:
+            write_story_package(narration_review.original_package, destination / "story_package.original.json")
     return result
 
 
@@ -897,4 +961,11 @@ def _with_target(config: ReelConfig, target: str) -> ReelConfig:
         editorial_audience_id=config.editorial_audience_id,
         editorial_min_score=config.editorial_min_score,
         editorial_audiences_file=config.editorial_audiences_file,
+        narration_review_provider=config.narration_review_provider,
+        narration_review_enabled=config.narration_review_enabled,
+        narration_review_min_score=config.narration_review_min_score,
+        narration_review_hook_min_score=config.narration_review_hook_min_score,
+        narration_review_curiosity_min_score=config.narration_review_curiosity_min_score,
+        narration_review_max_rewrites=config.narration_review_max_rewrites,
+        narration_glossary_file=config.narration_glossary_file,
     )

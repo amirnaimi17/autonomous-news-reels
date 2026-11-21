@@ -144,21 +144,36 @@ CRITICAL:
 - Do not invent numbers, dates, outcomes, or quotes outside the fact pack.
 """.strip()
 
+# Spoken length target for Aran (~12 Persian chars/sec from the approved sample).
+TARGET_SPOKEN_SECONDS = 40.0
+MIN_SPOKEN_SECONDS = 32.0
+TARGET_NARRATION_CHARS = int(TARGET_SPOKEN_SECONDS * CHARS_PER_SECOND)
+
 
 def script_prompt(fact_pack: Mapping[str, Any], editorial: Mapping[str, Any]) -> str:
     """Prompt for a model that must return a pilot ``story_package`` JSON object."""
 
     return (
         "You write Instagram Reel narration for Persian-speaking people living in Germany.\n"
+        "Sound like an experienced Persian news presenter speaking directly to the listener, "
+        "not like a translated German newspaper.\n"
         "Return ONLY one JSON object. No markdown fences.\n"
         f"{_STORY_PACKAGE_SCHEMA_TEXT}\n"
         "Rules:\n"
         "- language must be fa-IR.\n"
-        "- Write natural spoken Persian in short complete sentences.\n"
-        "- Put attribution in the same sentence as each claim.\n"
-        "- Aim for 35–45 seconds total; set duration_policy to completeness when needed.\n"
+        "- Write natural conversational spoken Persian in short complete sentences.\n"
+        "- Structure: hook → why it matters → what happened → consequence → practical takeaway.\n"
+        "- Opening must give a reason to keep listening within the first sentence.\n"
+        "- Each scene must add new information or a clear consequence; no filler or repetition.\n"
+        "- Use contextual attribution (مثل «طبق گزارش تگس‌شاو») when needed; "
+        "avoid robotic «این خبر از … است».\n"
+        f"- Spoken length target: {TARGET_SPOKEN_SECONDS:.0f}s "
+        f"(about {TARGET_NARRATION_CHARS} Persian characters across all scenes). "
+        f"Do not submit under ~{MIN_SPOKEN_SECONDS:.0f}s of real speech.\n"
+        "- Scene duration_seconds must match how long the line will take to speak.\n"
         "- Every material claim needs claims[].source_urls from the fact pack.\n"
         "- Digits may stay in narration.\n"
+        "- Never invent who is affected or what changes unless the fact pack supports it.\n"
         f"FACT_PACK:\n{json.dumps(fact_pack, ensure_ascii=False)}\n"
         f"EDITORIAL_REVIEW:\n{json.dumps(editorial, ensure_ascii=False)}\n"
     )
@@ -393,11 +408,19 @@ def claim_grounding_errors(package: Mapping[str, Any], fact_pack: Mapping[str, A
     return errors
 
 
-def _finalize_package(
+def finalize_model_story_package(
     raw: Mapping[str, Any] | str,
     fact_pack: Mapping[str, Any],
     editorial: Mapping[str, Any],
+    *,
+    min_spoken_seconds: float | None = None,
 ) -> dict[str, Any]:
+    """Parse, normalize, and ground-check a model story package.
+
+    Spoken-length enforcement is optional here; the narration reviewer applies the
+    production minimum so short drafts can still be rewritten once.
+    """
+
     parsed = parse_model_story_package(raw)
     early = structure_errors(parsed)
     if early:
@@ -409,7 +432,23 @@ def _finalize_package(
     grounding = claim_grounding_errors(package, fact_pack)
     if grounding:
         raise GroundingError("; ".join(grounding))
+    if min_spoken_seconds is not None:
+        narration = " ".join(
+            str(scene.get("narration") or "").strip()
+            for scene in package.get("scenes") or []
+            if isinstance(scene, Mapping)
+        )
+        spoken = len(narration) / CHARS_PER_SECOND if narration else 0.0
+        if spoken < float(min_spoken_seconds):
+            raise GroundingError(
+                f"spoken narration ~{spoken:.1f}s is below the {min_spoken_seconds:.0f}s minimum "
+                f"(need about {int(float(min_spoken_seconds) * CHARS_PER_SECOND)} characters)"
+            )
     return package
+
+
+# Backward-compatible private alias used by generate_persian_story_package.
+_finalize_package = finalize_model_story_package
 
 
 def generate_persian_story_package(

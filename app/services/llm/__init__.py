@@ -8,6 +8,9 @@ from app.services.llm.persian_script import (
     pipeline_script_from_package,
 )
 
+# narration_review is imported by callers directly to avoid a circular import with
+# editorial_rank → openai_script → app.services.llm → narration_review → editorial_rank.
+
 __all__ = [
     "build_editorial_brief",
     "build_extractive_script",

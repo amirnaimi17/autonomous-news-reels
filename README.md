@@ -8,7 +8,7 @@ A standalone Python application that discovers recent news, chooses distinct sto
 | --- | --- | --- |
 | 1 | Structure, configuration, database, quota, provider ports | Implemented |
 | 2 | News research, selection, 72-hour rule, duplicate clustering | Implemented. Selection does not start production. |
-| 3 | Script-writing agent | Persian grounded scripts via `write_grounded_script`. Pilot fact-pack / editorial / `story_package.json` contracts are reused. OpenAI chat is optional and mockable; extractive English fallback remains for the older `ScriptRequest` path. |
+| 3 | Script-writing agent | Persian grounded scripts via `write_grounded_script`, with optional narration quality & engagement review before photos/TTS. Pilot fact-pack / editorial / `story_package.json` contracts are reused. OpenAI chat is optional and mockable; extractive English fallback remains for the older `ScriptRequest` path. See `docs/narration-quality-review.md`. |
 | 4 | Image and voice agents | Persian TTS via ElevenLabs Aran is wired through the existing `persian-tts` client (`narrate_aran`). Live HTTP requires explicit opt-in. Image generation is still later. |
 | 5 | FFmpeg / Remotion reel render | Remotion `DataReel` render path is wired (`render-reel` CLI + `render_with_remotion`). Validates 1080×1920 H.264/AAC with ffprobe. |
 | 6 | End-to-end Persian Reel pilot | Controlled `run-persian-pilot` workflow: story → Aran/fixture MP3 → Remotion → technical QA + contact sheet. Offline fixtures + mocked OpenAI/ElevenLabs tests. No Cron, no Instagram publish. |
