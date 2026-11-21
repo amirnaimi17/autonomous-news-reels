@@ -89,6 +89,18 @@ def _uk_eu_script() -> dict:
     }
 
 
+def test_story_is_uk_eu_ignores_substring_false_positives() -> None:
+    # "eu" inside Deutschland and "uk" inside Zukunft must not flip the detector.
+    assert not story_is_uk_eu(
+        "Bilger fordert Bekenntnis der Autoindustrie zu Deutschland",
+        "Die Zukunft der Produktion in Deutschland ist unklar.",
+    )
+    assert story_is_uk_eu(
+        "Junge Menschen profitieren: EU und Großbritannien nähern sich wieder an",
+        "Britain and the European Union agree on new opportunities for young people.",
+    )
+
+
 def test_uk_eu_queries_avoid_german_fallbacks_and_weak_flag_only_terms() -> None:
     title = "Junge Menschen profitieren: EU und Großbritannien nähern sich wieder an"
     summary = "Britain and the European Union agree on new opportunities for young people."

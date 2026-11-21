@@ -384,12 +384,33 @@ def searchable_visual_queries(visual: str, *, germany: str = "Germany") -> list[
     return list(dict.fromkeys(item for item in queries if item.strip() and not _is_weak_search_query(item)))
 
 
+def _has_topic_phrase(blob: str, phrases: tuple[str, ...]) -> bool:
+    """Match whole phrases/tokens only — never substrings inside Deutschland/Zukunft."""
+
+    text = f" {blob.casefold()} "
+    for phrase in phrases:
+        needle = phrase.casefold().strip()
+        if not needle:
+            continue
+        if " " in needle:
+            if f" {needle} " in text or text.strip().startswith(needle) or text.strip().endswith(needle):
+                if needle in text:
+                    return True
+        else:
+            if re.search(rf"(?<![a-zäöüß]){re.escape(needle)}(?![a-zäöüß])", text):
+                return True
+    return False
+
+
 def story_is_uk_eu(title: str, summary: str, visual: str = "") -> bool:
-    blob = f"{title} {summary} {visual}".casefold()
-    uk = any(
-        token in blob
-        for token in (
+    """True only for Britain↔EU stories — not German auto news containing 'eu'/'uk' substrings."""
+
+    blob = f"{title} {summary} {visual}"
+    uk = _has_topic_phrase(
+        blob,
+        (
             "uk",
+            "u.k.",
             "britain",
             "british",
             "england",
@@ -398,9 +419,19 @@ def story_is_uk_eu(title: str, summary: str, visual: str = "") -> bool:
             "großbritannien",
             "grossbritannien",
             "united kingdom",
-        )
+        ),
     )
-    eu = any(token in blob for token in ("eu", "european union", "europäische", "europaeische", "europa"))
+    eu = _has_topic_phrase(
+        blob,
+        (
+            "eu",
+            "e.u.",
+            "european union",
+            "europäische union",
+            "europaeische union",
+            "european commission",
+        ),
+    )
     return uk and eu
 
 
