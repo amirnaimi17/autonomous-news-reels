@@ -96,6 +96,13 @@ class ReelConfig:
     editorial_audience_id: str
     editorial_min_score: float | None
     editorial_audiences_file: Path
+    narration_review_provider: str = "off"
+    narration_review_enabled: bool = False
+    narration_review_min_score: float = 80.0
+    narration_review_hook_min_score: float = 80.0
+    narration_review_curiosity_min_score: float = 75.0
+    narration_review_max_rewrites: int = 1
+    narration_glossary_file: Path | None = None
 
     @property
     def zone(self) -> ZoneInfo:
@@ -153,6 +160,22 @@ def load_reel_config() -> ReelConfig:
             os.getenv(
                 "REEL_EDITORIAL_AUDIENCES_FILE",
                 root / "config" / "editorial_audiences.json",
+            )
+        ),
+        narration_review_provider=(
+            os.getenv("REEL_NARRATION_REVIEW_PROVIDER", "off").strip().lower() or "off"
+        ),
+        narration_review_enabled=_flag("REEL_NARRATION_REVIEW_ENABLED", False),
+        narration_review_min_score=float(os.getenv("REEL_NARRATION_REVIEW_MIN_SCORE", "80")),
+        narration_review_hook_min_score=float(os.getenv("REEL_NARRATION_HOOK_MIN_SCORE", "80")),
+        narration_review_curiosity_min_score=float(
+            os.getenv("REEL_NARRATION_CURIOSITY_MIN_SCORE", "75")
+        ),
+        narration_review_max_rewrites=int(os.getenv("REEL_NARRATION_MAX_REWRITES", "1")),
+        narration_glossary_file=Path(
+            os.getenv(
+                "REEL_NARRATION_GLOSSARY_FILE",
+                root / "config" / "german_term_glossary.json",
             )
         ),
     )

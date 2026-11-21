@@ -1,6 +1,7 @@
 """Language-model providers."""
 
 from app.services.llm.extractive import build_extractive_script
+from app.services.llm.narration_review import review_and_refine_story_package
 from app.services.llm.persian_script import (
     build_editorial_brief,
     build_fact_pack,
@@ -14,4 +15,5 @@ __all__ = [
     "build_fact_pack",
     "generate_persian_story_package",
     "pipeline_script_from_package",
+    "review_and_refine_story_package",
 ]

@@ -1,0 +1,38 @@
+{
+  "Frühstartrente": {
+    "preferred_fa": [
+      "Frühstartrente",
+      "طرح پس‌انداز بازنشستگی از سنین پایین",
+      "پس‌انداز بازنشستگی از سنین پایین"
+    ],
+    "misleading_fa": ["بازنشستگی زودهنگام"]
+  },
+  "Kindergeld": {
+    "preferred_fa": ["Kindergeld", "کمک‌هزینه فرزند", "کمک هزینه فرزند"],
+    "misleading_fa": []
+  },
+  "Elterngeld": {
+    "preferred_fa": ["Elterngeld", "کمک‌هزینه والدین", "کمک هزینه والدین"],
+    "misleading_fa": []
+  },
+  "Bürgergeld": {
+    "preferred_fa": ["Bürgergeld", "بورگرگلد", "کمک‌هزینه شهروندی"],
+    "misleading_fa": []
+  },
+  "Bundesrat": {
+    "preferred_fa": ["Bundesrat", "بوندس‌رات", "بوندسرات", "شورای فدرال"],
+    "misleading_fa": []
+  },
+  "Bundestag": {
+    "preferred_fa": ["Bundestag", "بوندس‌تاگ", "بوندستاگ", "مجلس فدرال"],
+    "misleading_fa": []
+  },
+  "Ausländerbehörde": {
+    "preferred_fa": ["Ausländerbehörde", "اداره اتباع خارجی"],
+    "misleading_fa": []
+  },
+  "Aufenthaltstitel": {
+    "preferred_fa": ["Aufenthaltstitel", "مجوز اقامت", "عنوان اقامت"],
+    "misleading_fa": []
+  }
+}
