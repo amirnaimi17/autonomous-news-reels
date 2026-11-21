@@ -23,7 +23,6 @@ from app.services.llm.persian_script import (
     finalize_model_story_package,
     script_prompt,
 )
-from app.services.news.editorial_rank import estimate_tokens_from_text
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_GLOSSARY_FILE = ROOT / "config" / "german_term_glossary.json"
@@ -32,6 +31,12 @@ _MODEL_USD_PER_MTOKEN = {
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "gpt-4o": {"input": 2.50, "output": 10.00},
 }
+
+
+def _estimate_tokens_from_text(text: str) -> int:
+    """Rough token estimate without importing editorial_rank (avoids circular imports)."""
+
+    return max(1, (len(text or "") + 3) // 4)
 
 SCORE_KEYS = (
     "hook_strength",
@@ -226,7 +231,7 @@ def estimate_spoken_seconds(package: Mapping[str, Any]) -> float:
 
 def estimate_review_usage(prompt: str, *, model: str, expected_output_tokens: int = 900) -> dict[str, Any]:
     rates = _MODEL_USD_PER_MTOKEN.get(model) or _MODEL_USD_PER_MTOKEN["gpt-4o-mini"]
-    input_tokens = estimate_tokens_from_text(prompt)
+    input_tokens = _estimate_tokens_from_text(prompt)
     output_tokens = max(1, int(expected_output_tokens))
     usd = (input_tokens * rates["input"] + output_tokens * rates["output"]) / 1_000_000
     return {
