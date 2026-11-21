@@ -1,0 +1,149 @@
+{
+  "catalog_version": "2026-11-19.3",
+  "currency": "USD",
+  "effective_date": "2026-11-19",
+  "entries": [
+    {
+      "provider": "edge-tts",
+      "model": "fa-IR-FaridNeural",
+      "billing": "unbilled",
+      "unit": "character",
+      "usd_per_unit": 0,
+      "persian_pronunciation_tested": false,
+      "source": "The edge-tts client used here has no invoice and no Microsoft price sheet. A $0 figure is not a commercial license.",
+      "retrieved": "2026-11-19"
+    },
+    {
+      "provider": "openai",
+      "model": "tts-1",
+      "billing": "per_character",
+      "unit": "character",
+      "usd_per_unit": 0.000015,
+      "persian_pronunciation_tested": false,
+      "notes": "Published as $15 per 1M characters. Deprecated; shutdown 2027-01-06. Not selected as the default.",
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "retrieved": "2026-11-19"
+    },
+    {
+      "provider": "openai",
+      "model": "tts-1-hd",
+      "billing": "per_character",
+      "unit": "character",
+      "usd_per_unit": 0.00003,
+      "persian_pronunciation_tested": false,
+      "notes": "Published as $30 per 1M characters. Deprecated; shutdown 2027-01-06.",
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "retrieved": "2026-11-19"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-image-2.5-sunburst",
+      "billing": "documented_output_estimate",
+      "unit": "token",
+      "size": "1024x1536",
+      "quality": "high",
+      "output_tokens": 1372,
+      "output_usd": 0.04116,
+      "usd_per_1m_image_output_tokens": 30,
+      "usd_per_1m_text_input_tokens": 5,
+      "usd_per_1m_image_input_tokens": 8,
+      "notes": "Official image-generation calculator for GPT-Image-2.5 at 1024x1536 and quality high: 1372 image-output tokens, $0.04116 at $30 per 1M. The rendered calculator default, GPT-Image-2.6 low at 1024x1024, is 823 tokens and $0.02469, which matches the same formula. This cell excludes text input, image input, and partial images. It is an estimate, not a ceiling. Actual tokens come from the response usage object. Cached input rates do not apply to the direct Images API. Text input is $5 per 1M tokens and image input is $8 per 1M tokens.",
+      "source": "https://developers.openai.com/api/docs/guides/image-generation",
+      "retrieved": "2026-11-19"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o-mini-tts",
+      "billing": "incomplete_without_audio_tokens",
+      "unit": "token",
+      "usd_per_1m_text_input_tokens": 0.6,
+      "usd_per_1m_audio_output_tokens": 12,
+      "persian_pronunciation_tested": false,
+      "notes": "Audio output tokens are known only after a call. Do not invent them. Deprecated; shutdown 2027-01-06.",
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "retrieved": "2026-11-19"
+    },
+    {
+      "provider": "elevenlabs",
+      "model": "eleven_v4",
+      "billing": "per_character",
+      "unit": "character",
+      "usd_per_unit": 0.00008,
+      "persian_documented": true,
+      "persian_pronunciation_tested": false,
+      "notes": "API price $0.08 per 1,000 characters. Persian (fa) is on the Eleven v4 language list. Multilingual v2 does not list Persian. No listening test has been run.",
+      "source": "https://elevenlabs.io/pricing/api",
+      "language_source": "https://elevenlabs.io/docs/overview/capabilities/text-to-speech/eleven-v4",
+      "retrieved": "2026-11-19"
+    },
+    {
+      "provider": "elevenlabs",
+      "model": "eleven_multilingual_v2",
+      "billing": "unsupported_language",
+      "unit": "character",
+      "usd_per_unit": 0.00008,
+      "persian_documented": false,
+      "notes": "The 29-language list does not include Persian. Do not use it for fa-IR.",
+      "source": "https://elevenlabs.io/docs/overview/models/",
+      "retrieved": "2026-11-19"
+    },
+    {
+      "provider": "google",
+      "model": "gemini-nano-banana-2.1",
+      "billing": "per_image_output_equivalent",
+      "unit": "image_1k",
+      "usd_per_image": 0.0336,
+      "resolution": "1024x1024",
+      "output_tokens_per_image": 1120,
+      "notes": "Standard tier, published equivalent of 1120 image tokens at $30 per 1M. Prompt input tokens are extra and are not included. Not a photograph of a news event.",
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "retrieved": "2026-11-19"
+    },
+    {
+      "provider": "google",
+      "model": "gemini-3-pro-image",
+      "billing": "per_image_output_equivalent",
+      "unit": "image_1k_or_2k",
+      "usd_per_image": 0.134,
+      "notes": "Published equivalent for a 1K or 2K output image. Prompt tokens are extra.",
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "retrieved": "2026-11-19"
+    },
+    {
+      "provider": "google",
+      "model": "imagen-4",
+      "billing": "unavailable",
+      "notes": "Imagen 4 endpoints were scheduled to shut down on 2026-08-17. Do not plan new calls on them.",
+      "source": "https://aistudio.google.com/docs/models/imagen",
+      "retrieved": "2026-11-19"
+    },
+    {
+      "provider": "cursor-generate-image",
+      "model": "not-returned",
+      "billing": "unknown",
+      "notes": "The Cursor image tool returns no model id, seed, or price. A plan that needs a new Cursor image cannot be cleared against the budget.",
+      "source": "Observed tool behavior in this repository on 2026-11-19",
+      "retrieved": "2026-11-19"
+    },
+    {
+      "provider": "remotion",
+      "model": "automators",
+      "billing": "license_dependent",
+      "usd_per_render": 0.01,
+      "monthly_minimum_usd": 100,
+      "notes": "Company automations are $0.01 per render with a $100 monthly minimum. Individuals and organizations of up to 3 people, and non-commercial evaluation, are published as free. Headcount for this project was not verified, so a production Remotion render stays blocked.",
+      "source": "https://www.remotion.dev/docs/license/pricing",
+      "retrieved": "2026-11-19"
+    },
+    {
+      "provider": "ffmpeg",
+      "model": "local",
+      "billing": "unbilled",
+      "unit": "render",
+      "usd_per_unit": 0,
+      "notes": "Local encode on this machine. Electricity is not metered.",
+      "source": "Local FFmpeg 8.0.1",
+      "retrieved": "2026-11-19"
+    }
+  ]
+}

@@ -60,7 +60,7 @@ The 72-hour window, importance scoring, and event clustering are implemented by 
 ## What discovery does
 
 - Keeps articles published from 72 hours ago through 15 minutes ahead. Undated articles are dropped.
-- Orders eligible stories as today, then yesterday, then older stories inside the window. An older story must score at least `OLDER_WINDOW_MIN_IMPORTANCE` (default 0.75). Today and yesterday use `MIN_IMPORTANCE_SCORE` (default 0.55).
+- Orders eligible stories by audience tier, then today, yesterday, and older stories inside the window. Rows saved before the tier existed keep today-before-yesterday order among themselves. An older story must score at least `OLDER_WINDOW_MIN_IMPORTANCE` (default 0.75). Today and yesterday use `MIN_IMPORTANCE_SCORE` (default 0.55).
 - Selects up to `DAILY_REEL_LIMIT` events for the local day. The default is 3. The setting accepts 0 through 24. `0` selects nothing. Production slots do not change this number.
 - Inserts only missing ranks. A stored rank is never replaced. An event selected on any date is never selected again.
 - One failed feed does not drop the other configured feeds.

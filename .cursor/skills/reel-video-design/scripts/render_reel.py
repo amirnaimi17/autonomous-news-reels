@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+FONTS = Path(__file__).resolve().parents[1] / "fonts"
 WIDTH = 1080
 HEIGHT = 1920
 FPS = 30
@@ -91,13 +92,14 @@ def escape_ass(text: str) -> str:
     return text.replace("\\", "\\\\").replace("{", "(").replace("}", ")").replace("\n", "\\N")
 
 
-def group_words(words: list[dict], max_chars: int = 42) -> list[dict]:
+def group_words(words: list[dict], max_chars: int = 36) -> list[dict]:
     groups: list[dict] = []
     bucket: list[dict] = []
     for word in words:
         bucket.append(word)
         text = " ".join(item["text"] for item in bucket)
-        if len(text) >= max_chars:
+        sentence_end = text.rstrip().endswith((".", "؟", "!", ":", "؛"))
+        if len(text) >= max_chars or sentence_end:
             groups.append(
                 {"text": text, "start": bucket[0]["start"], "end": bucket[-1]["end"]}
             )
@@ -109,15 +111,16 @@ def group_words(words: list[dict], max_chars: int = 42) -> list[dict]:
 
 def write_ass(story: dict, manifest: dict, offsets: list[float], path: Path) -> None:
     events = []
+    disclaimer = story.get("caption_disclaimer") or "تصویرها طرح توضیحی‌اند، نه فیلم و نه عکس رویداد."
     events.append(
-        f"Dialogue: 0,{ass_time(0)},{ass_time(offsets[-1] + manifest['scenes'][-1]['duration'])},Disclaimer,,0,0,0,,{escape_ass('تصویرها طرح توضیحی‌اند، نه فیلم و نه عکس رویداد.')}"
+        f"Dialogue: 0,{ass_time(0)},{ass_time(offsets[-1] + manifest['scenes'][-1]['duration'])},Disclaimer,,0,0,0,,{escape_ass(disclaimer)}"
     )
     for scene, spoken, offset in zip(story["scenes"], manifest["scenes"], offsets, strict=True):
         headline = escape_ass(scene["on_screen_text"])
         events.append(
             f"Dialogue: 1,{ass_time(offset)},{ass_time(offset + spoken['duration'])},Headline,,0,0,0,,{{\\fad(220,180)}}{headline}"
         )
-        groups = group_words(spoken.get("words") or [])
+        groups = spoken.get("captions") or group_words(spoken.get("words") or [])
         if not groups:
             groups = [{"text": spoken["narration"], "start": 0.0, "end": float(spoken["duration"])}]
         for line in groups:
@@ -135,9 +138,9 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Disclaimer,Noto Naskh Arabic,28,&H00ECF4F7,&H000000FF,&HE612161C,&HE612161C,0,0,0,0,100,100,0,0,3,12,0,9,72,72,220,1
-Style: Headline,Noto Naskh Arabic,52,&H00ECF4F7,&H000000FF,&HE612161C,&HE612161C,-1,0,0,0,100,100,0,0,3,18,0,3,72,72,520,1
-Style: Subtitle,Noto Naskh Arabic,40,&H00F7F4EC,&H000000FF,&HE612161C,&HE612161C,0,0,0,0,100,100,0,0,3,14,0,2,80,80,360,1
+Style: Disclaimer,Vazirmatn,28,&H00ECF4F7,&H000000FF,&HE612161C,&HE612161C,0,0,0,0,100,100,0,0,3,12,0,8,72,72,120,1
+Style: Headline,Vazirmatn,46,&H00ECF4F7,&H000000FF,&HE612161C,&HE612161C,-1,0,0,0,100,100,0,0,3,16,0,8,90,90,280,1
+Style: Subtitle,Vazirmatn,38,&H00F7F4EC,&H000000FF,&HE612161C,&HE612161C,0,0,0,0,100,100,0,0,3,14,0,2,96,96,300,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -174,23 +177,42 @@ def fit_audio(source: Path, seconds: float, destination: Path) -> None:
     )
 
 
+def _accepted_narration(manifest: dict) -> bool:
+    """Aran is the production voice. Farid at natural speed remains the Edge fallback."""
+
+    if manifest.get("espeak_used"):
+        return False
+    farid = manifest.get("voice") == "fa-IR-FaridNeural" and manifest.get("rate") == "+0%"
+    aran = (
+        manifest.get("provider") == "elevenlabs"
+        and manifest.get("model") == "eleven_v4"
+        and manifest.get("voice_id") == "PEdcOLzbXYhL8IKOswXB"
+        and manifest.get("language_code") == "fa"
+        and manifest.get("speed") == 1.0
+    )
+    return farid or aran
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render the Persian Reel")
     parser.add_argument("--story", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--images", type=Path, nargs=4, required=True)
+    parser.add_argument("--images", type=Path, nargs="+", required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
+    parser.add_argument("--master-audio", type=Path)
     args = parser.parse_args()
 
     story = json.loads(args.story.read_text(encoding="utf-8"))
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-    if manifest.get("voice") != "fa-IR-FaridNeural":
-        fail(f"refusing to render a Reel whose manifest voice is {manifest.get('voice')}")
+    if not _accepted_narration(manifest):
+        fail(f"refusing to render a Reel whose manifest voice is {manifest.get('voice') or manifest.get('voice_id')}")
     if manifest.get("espeak_used"):
         fail("refusing espeak audio")
-    if len(manifest.get("scenes") or []) != 4:
-        fail("voice manifest must contain four scenes")
+    count = len(args.images)
+    if count not in (3, 4) or len(manifest.get("scenes") or []) != count or len(story.get("scenes") or []) != count:
+        fail("story, voice manifest, and images must all contain three or four scenes")
+    transitions = TRANSITIONS if count == 4 else ("smoothleft", "fade")
 
     args.work.mkdir(parents=True, exist_ok=True)
     encoder = "h264_nvenc" if nvenc_works() else "libx264"
@@ -230,9 +252,10 @@ def main() -> None:
                 str(video),
             ]
         )
-        fit_audio(Path(scene["audio"]), seconds, audio)
+        if args.master_audio is None:
+            fit_audio(Path(scene["audio"]), seconds, audio)
+            audio_clips.append(audio)
         video_clips.append(video)
-        audio_clips.append(audio)
 
     offsets = [0.0]
     for duration in clip_durations[:-1]:
@@ -245,18 +268,12 @@ def main() -> None:
 
     video_chain = []
     current = "[0:v]"
-    for index, (transition, offset) in enumerate(zip(TRANSITIONS, xfade_offsets), start=1):
-        nxt = f"[v{index}]" if index < 3 else "[vx]"
+    for index, (transition, offset) in enumerate(zip(transitions, xfade_offsets), start=1):
+        nxt = f"[v{index}]" if index < count - 1 else "[vx]"
         video_chain.append(
             f"{current}[{index}:v]xfade=transition={transition}:duration={TRANSITION}:offset={offset:.3f}{nxt}"
         )
         current = nxt
-    audio_chain = []
-    current_a = "[0:a]"
-    for index in range(1, 4):
-        nxt = f"[a{index}]" if index < 3 else "[ax]"
-        audio_chain.append(f"{current_a}[{index}:a]acrossfade=d={TRANSITION}:c1=tri:c2=tri{nxt}")
-        current_a = nxt
     silent = args.work / "silent.mp4"
     mixed = args.work / "mixed.mp4"
     video_inputs = []
@@ -280,21 +297,33 @@ def main() -> None:
             str(silent),
         ]
     )
-    audio_inputs = []
-    for clip in audio_clips:
-        audio_inputs.extend(["-i", str(clip)])
-    run(
-        [
-            "ffmpeg",
-            "-y",
-            *audio_inputs,
-            "-filter_complex",
-            ";".join(audio_chain),
-            "-map",
-            "[ax]",
-            str(args.work / "narration.wav"),
-        ]
-    )
+    narration = args.work / "narration.wav"
+    if args.master_audio is not None:
+        if not args.master_audio.is_file():
+            fail(f"master audio is missing: {args.master_audio}")
+        narration = args.master_audio
+    else:
+        audio_chain = []
+        current_a = "[0:a]"
+        for index in range(1, count):
+            nxt = f"[a{index}]" if index < count - 1 else "[ax]"
+            audio_chain.append(f"{current_a}[{index}:a]acrossfade=d={TRANSITION}:c1=tri:c2=tri{nxt}")
+            current_a = nxt
+        audio_inputs = []
+        for clip in audio_clips:
+            audio_inputs.extend(["-i", str(clip)])
+        run(
+            [
+                "ffmpeg",
+                "-y",
+                *audio_inputs,
+                "-filter_complex",
+                ";".join(audio_chain),
+                "-map",
+                "[ax]",
+                str(narration),
+            ]
+        )
     captions = args.work / "captions.ass"
     write_ass(story, manifest, offsets, captions)
     caption_arg = str(captions).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
@@ -305,7 +334,7 @@ def main() -> None:
             "-i",
             str(silent),
             "-vf",
-            f"subtitles={caption_arg}:fontsdir=/usr/share/fonts/truetype/noto,format=yuv420p",
+            f"subtitles={caption_arg}:fontsdir={str(FONTS).replace(':', '\\:')},format=yuv420p",
             "-c:v",
             encoder,
             "-pix_fmt",
@@ -323,7 +352,7 @@ def main() -> None:
             "-i",
             str(args.work / "captioned.mp4"),
             "-i",
-            str(args.work / "narration.wav"),
+            str(narration),
             "-c:v",
             "copy",
             "-c:a",
@@ -338,14 +367,15 @@ def main() -> None:
     report = {
         "encoder": encoder,
         "transition_seconds": TRANSITION,
-        "transitions": list(TRANSITIONS),
+        "transitions": list(transitions),
         "clip_durations": clip_durations,
         "scene_offsets": offsets,
         "xfade_offsets": xfade_offsets,
         "output": info,
-        "voice": manifest["voice"],
-        "rate": manifest["rate"],
-        "skills": ["persian-tts", "reel-video-design"],
+        "voice": manifest.get("voice") or manifest.get("voice_id"),
+        "rate": manifest.get("rate") or manifest.get("speed"),
+        "font": "Vazirmatn",
+        "skills": ["persian-tts", "reel-image-generation", "reel-video-design"],
     }
     (args.out.parent / "render_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps({"out": str(args.out), "encoder": encoder, "duration": info["format"]["duration"]}, ensure_ascii=False))

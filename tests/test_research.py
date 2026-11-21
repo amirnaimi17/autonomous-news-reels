@@ -143,15 +143,28 @@ def test_today_ranks_before_a_higher_scoring_yesterday_story() -> None:
 
 
 def test_score_thresholds_match_the_published_formula() -> None:
-    older_strong = score_event(band="older", source_count=3, impact=True, opinion=False)
-    older_weak = score_event(band="older", source_count=1, impact=True, opinion=False)
-    today_single = score_event(band="today", source_count=1, impact=False, opinion=False)
-    opinion = score_event(band="today", source_count=3, impact=True, opinion=True)
-    assert older_strong.score == 0.75
-    assert eligible(older_strong, minimum=0.55, older_minimum=0.75)
-    assert older_weak.score == pytest.approx(0.585)
-    assert not eligible(older_weak, minimum=0.55, older_minimum=0.75)
-    assert today_single.score == pytest.approx(0.635)
-    assert eligible(today_single, minimum=0.55, older_minimum=0.75)
+    ticket = score_event(
+        band="older",
+        source_count=1,
+        impact=False,
+        opinion=False,
+        text="Deutschlandticket steigt 2027",
+        source_urls=("https://www.bundesregierung.de/breg-de/aktuelles/example",),
+    )
+    assert ticket.audience_tier == "A"
+    assert ticket.source_quality == "primary"
+    assert ticket.score == 0.765
+    assert eligible(ticket, minimum=0.55, older_minimum=0.75)
+    alaska = score_event(
+        band="today",
+        source_count=1,
+        impact=True,
+        opinion=False,
+        text="Democrats win Alaska Senate race",
+        source_urls=("https://www.bbc.co.uk/news/example",),
+    )
+    assert alaska.audience_filter == "none"
+    assert not eligible(alaska, minimum=0.55, older_minimum=0.75)
+    opinion = score_event(band="today", source_count=3, impact=True, opinion=True, text="Kindergeld steigt")
     assert opinion.score == 0.0
     assert not eligible(opinion, minimum=0.55, older_minimum=0.75)

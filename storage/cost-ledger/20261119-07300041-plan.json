@@ -1,0 +1,19 @@
+{
+  "reel_id": "07300041-5a5b-46b5-bfde-99edea43819c",
+  "event_id": "07300041-5a5b-46b5-bfde-99edea43819c",
+  "requests": [
+    {
+      "provider": "edge-tts",
+      "model": "fa-IR-FaridNeural",
+      "characters": 216
+    },
+    {
+      "provider": "ffmpeg",
+      "model": "local",
+      "renders": 1
+    }
+  ],
+  "layout": "data-graphic",
+  "generated_images": 0,
+  "notes": "No paid provider is configured. This plan does not render a new MP4."
+}

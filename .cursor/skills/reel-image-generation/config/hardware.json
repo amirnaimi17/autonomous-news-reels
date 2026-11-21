@@ -1,0 +1,14 @@
+{
+  "measured_at": "2026-11-19",
+  "gpu": "Quadro T2000 with Max-Q Design",
+  "vram_mib": 4096,
+  "vram_free_mib": 2019,
+  "compute_capability": 7.5,
+  "system_ram_gib": 61,
+  "disk_free_gib": 846,
+  "ffmpeg": "8.0.1",
+  "python": "3.14.4",
+  "node": null,
+  "comfyui": false,
+  "notes": "Free VRAM was about 2 GiB when measured. Do not load a model whose weight footprint exceeds 4096 MiB."
+}

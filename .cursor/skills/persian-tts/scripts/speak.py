@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from preprocess import load_dictionary, prepare_narration
+
 DEFAULT_VOICE = "fa-IR-FaridNeural"
 TICKS_PER_SECOND = 10_000_000
 
@@ -94,8 +96,8 @@ async def synthesize(edge_tts, text: str, voice: str, rate: str, destination: Pa
 def narrations_from_story(path: Path) -> list[str]:
     data = json.loads(path.read_text(encoding="utf-8"))
     scenes = data.get("scenes")
-    if not isinstance(scenes, list) or len(scenes) != 4:
-        fail("story package needs exactly four scenes")
+    if not isinstance(scenes, list) or not 3 <= len(scenes) <= 8:
+        fail("story package needs three to eight scenes")
     lines = []
     for index, scene in enumerate(scenes, start=1):
         text = scene.get("narration") if isinstance(scene, dict) else None
@@ -123,74 +125,65 @@ async def render_pass(edge_tts, lines: list[str], voice: str, rate: str, out_dir
 
 
 def choose_next_rate(current: int, speech: float, desired: float, seen: set[int]) -> int | None:
-    if speech <= 0:
-        return None
-    speed = (1 + current / 100) * (speech / desired)
-    nxt = max(-15, min(30, int(round((speed - 1) * 100))))
-    if nxt == current or nxt in seen:
-        return None
-    return nxt
+    """Kept for tests of the old search. Production refuses to call it."""
+    return None
 
 
 async def main_async(args: argparse.Namespace) -> None:
     voice = args.voice
     if "espeak" in voice.lower():
         fail("espeak-ng is not a fallback; use an Edge neural voice")
+    if rate_percent(args.rate) != 0 and not args.allow_rate:
+        fail("refusing a non-zero rate unless --allow-rate is set. Shorten the narration instead.")
     edge_tts = load_edge_tts()
-    lines = narrations_from_story(args.story)
+    dictionary = load_dictionary(args.dictionary)
+    raw_lines = narrations_from_story(args.story)
+    lines = [prepare_narration(line, dictionary) for line in raw_lines]
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     overlaps = (len(lines) - 1) * args.transition
-    desired_speech = args.target + overlaps
-    percent = rate_percent(args.rate)
-    seen: set[int] = set()
-    attempts = []
-    scenes: list[dict] = []
-    for _ in range(6):
-        seen.add(percent)
-        rate = format_rate(percent)
-        scenes = await render_pass(edge_tts, lines, voice, rate, out_dir)
-        speech = round(sum(scene["duration"] for scene in scenes), 3)
-        estimated_final = round(speech - overlaps, 3)
-        attempts.append({"rate": rate, "speech_seconds": speech, "estimated_final_seconds": estimated_final})
-        if args.min_seconds <= estimated_final <= args.max_seconds:
-            break
-        nxt = choose_next_rate(percent, speech, desired_speech, seen)
-        if nxt is None:
-            fail(
-                "could not fit Farid narration into "
-                f"{args.min_seconds:.0f}–{args.max_seconds:.0f}s at a natural rate. "
-                f"Last estimate was {estimated_final}s at {rate}. Shorten the narration. "
-                "espeak-ng will not be used."
-            )
-        percent = nxt
-    else:
-        fail("rate search did not converge")
-    speech = attempts[-1]["speech_seconds"]
+    rate = format_rate(rate_percent(args.rate))
+    scenes = await render_pass(edge_tts, lines, voice, rate, out_dir)
+    for scene, original in zip(scenes, raw_lines, strict=True):
+        scene["display_narration"] = original
+        scene["spoken_narration"] = scene["narration"]
+    speech = round(sum(scene["duration"] for scene in scenes), 3)
+    estimated_final = round(speech - overlaps, 3)
+    policy = json.loads(args.story.read_text(encoding="utf-8")).get("duration_policy")
+    if policy != "completeness" and not args.min_seconds <= estimated_final <= args.max_seconds:
+        fail(
+            "narration does not fit "
+            f"{args.min_seconds:.0f}–{args.max_seconds:.0f}s at {rate}. "
+            f"Estimated final duration is {estimated_final}s. "
+            "Shorten the narration. Speaking speed will not be raised automatically, and espeak-ng will not be used."
+        )
     manifest = {
         "engine": "edge-tts",
         "provider": "Microsoft Edge neural TTS",
         "voice": voice,
-        "rate": attempts[-1]["rate"],
+        "rate": rate,
         "pitch": "+0Hz",
         "volume": "+0%",
         "espeak_used": False,
+        "rate_was_auto_increased": False,
+        "pronunciation_dictionary": str(args.dictionary) if args.dictionary else None,
         "transition_seconds": args.transition,
         "target_final_seconds": args.target,
         "speech_seconds": speech,
-        "estimated_final_seconds": attempts[-1]["estimated_final_seconds"],
-        "attempts": attempts,
+        "estimated_final_seconds": estimated_final,
+        "attempts": [{"rate": rate, "speech_seconds": speech, "estimated_final_seconds": estimated_final}],
         "scenes": scenes,
+        "human_listening": "not reviewed",
     }
     (out_dir / "voice_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    print(json.dumps({"voice": voice, "rate": manifest["rate"], "speech_seconds": speech, "estimated_final_seconds": manifest["estimated_final_seconds"]}, ensure_ascii=False))
+    print(json.dumps({"voice": voice, "rate": rate, "speech_seconds": speech, "estimated_final_seconds": estimated_final}, ensure_ascii=False))
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Speak a four-scene Persian Reel with Edge TTS")
+    parser = argparse.ArgumentParser(description="Speak an approved Persian Reel with Edge TTS")
     parser.add_argument("--story", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--voice", default=DEFAULT_VOICE)
@@ -199,6 +192,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-seconds", type=float, default=38.0)
     parser.add_argument("--max-seconds", type=float, default=42.0)
     parser.add_argument("--transition", type=float, default=0.4)
+    parser.add_argument("--dictionary", type=Path, default=Path(__file__).resolve().parents[1] / "config" / "pronunciation.json")
+    parser.add_argument("--allow-rate", action="store_true", help="Permit a non-zero --rate. Never used to auto-fit a long script.")
     return parser.parse_args()
 
 

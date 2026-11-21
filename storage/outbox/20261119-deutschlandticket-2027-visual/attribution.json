@@ -1,0 +1,26 @@
+[
+  {
+    "path": "storage/generated/pilot/20261119-deutschlandticket-2027-visual/assets/birkenwerder-trains.jpg",
+    "source_url": "https://commons.wikimedia.org/wiki/File:Z%C3%BCge_am_Bahnhof_Birkenwerder_20160315_16.jpg",
+    "author": "Sebastian Rittau",
+    "license": "CC BY 4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0",
+    "role": "licensed-photograph"
+  },
+  {
+    "path": "storage/generated/pilot/20261119-deutschlandticket-2027-visual/assets/ostkreuz-sbahn.jpg",
+    "source_url": "https://commons.wikimedia.org/wiki/File:Berlin_S-Bahn_Bhf_Ostkreuz_(S41_1246).jpg",
+    "author": "Michael F. H. Barth",
+    "license": "CC BY-SA 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+    "role": "licensed-photograph"
+  },
+  {
+    "path": "storage/generated/pilot/20261119-deutschlandticket-2027-visual/assets/vbn-d-ticket-front.jpg",
+    "source_url": "https://commons.wikimedia.org/wiki/File:D-Ticket_des_VBN_Vorderseite.jpg",
+    "author": "Sänger",
+    "license": "CC BY-SA 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+    "role": "licensed-photograph"
+  }
+]

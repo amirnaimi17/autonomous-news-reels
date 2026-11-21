@@ -77,15 +77,15 @@ def test_intake_fills_incrementally_and_does_not_start_production(tmp_path: Path
     repository.initialize(client_id="default", name="Default", timezone_name="Europe/Berlin", daily_reel_limit=3, now=NOW)
     settings = _settings(tmp_path)
     first_story = _article(
-        "Parliament election in France",
+        "Kindergeld rises for families in Germany",
         "https://example.com/france",
         "Example English",
         NOW - timedelta(hours=1),
     )
     later = [
         first_story,
-        _article("Court ruling in Italy", "https://example.com/italy", "Example English", NOW - timedelta(hours=1)),
-        _article("Sanctions decision in Canada", "https://example.com/canada", "Example English", NOW - timedelta(hours=1)),
+        _article("Mietpreisbremse Gesetzentwurf der Bundesregierung", "https://example.com/rent", "Example English", NOW - timedelta(hours=1)),
+        _article("BAMF integrationskurs places open in Berlin", "https://example.com/bamf", "Example English", NOW - timedelta(hours=1)),
     ]
     first = run_intake(settings, repository, now=NOW, source=ListSource([first_story]))
     assert [row.rank for row in first.selections] == [1]
@@ -97,6 +97,21 @@ def test_intake_fills_incrementally_and_does_not_start_production(tmp_path: Path
     assert second.selections[0].created_at == first.selections[0].created_at
     assert _counts(repository.path) == (0, 0)
     assert {event.state for event in repository.list_events("default")} == {"DISCOVERED"}
+
+
+def test_intake_does_not_select_a_story_with_no_germany_connection(tmp_path: Path) -> None:
+    repository = NewsReelsRepository(tmp_path / "news.db")
+    repository.initialize(client_id="default", name="Default", timezone_name="Europe/Berlin", daily_reel_limit=3, now=NOW)
+    settings = _settings(tmp_path)
+    article = _article(
+        "Parliament election in France",
+        "https://example.com/france",
+        "Example English",
+        NOW - timedelta(hours=1),
+    )
+    result = run_intake(settings, repository, now=NOW, source=ListSource([article]))
+    assert list(result.selections) == []
+    assert repository.list_events("default")[0].state == "DISCOVERED"
 
 
 def test_intake_clusters_the_entity_and_number_hint(tmp_path: Path) -> None:

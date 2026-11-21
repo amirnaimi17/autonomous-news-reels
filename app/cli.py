@@ -28,6 +28,19 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init-db", help="Create the database, the default client, and media directories")
     sub.add_parser("status", help="Show configuration, database counts, and FFmpeg encoders")
     sub.add_parser("discover", help="Collect configured feeds and fill today's remaining selections")
+    reel = sub.add_parser("init-reel-db", help="Create the Reel lifecycle database")
+    del reel
+    sub.add_parser("reel-status", help="Show Reel attempts and delivery state")
+    generate = sub.add_parser("generate-reel", help="Research and, when paid generation is enabled, render one Reel")
+    generate.add_argument("--target", default="almanyar")
+    generate.add_argument("--scheduled", action="store_true")
+    deliver = sub.add_parser("deliver-existing", help="Package the already rendered Deutschlandticket Reel")
+    deliver.add_argument("--source", default="storage/generated/pilot/20261119-deutschlandticket-2027-visual")
+    sub.add_parser("upload-outbox", help="Upload queued packages. Retains failures locally.")
+    sub.add_parser("import-library", help="Record the Reels already rendered in this project")
+    install = sub.add_parser("install-cron", help="Write the four Berlin generation cron lines")
+    install.add_argument("--apply", action="store_true")
+    sub.add_parser("remove-cron", help="Remove the Reel cron block from this user's crontab")
     return parser
 
 
@@ -36,6 +49,17 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in {
+        "init-reel-db",
+        "reel-status",
+        "generate-reel",
+        "deliver-existing",
+        "upload-outbox",
+        "import-library",
+        "install-cron",
+        "remove-cron",
+    }:
+        return _reel_command(args)
     try:
         settings = get_settings()
         configure_logging(settings.log_level, settings.log_file)
@@ -53,6 +77,47 @@ def main(argv: list[str] | None = None) -> int:
     except NewsReelsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    print(f"error: unknown command {args.command}", file=sys.stderr)
+    return 2
+
+
+def _reel_command(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from app.reels.commands import (
+        deliver_existing_command,
+        generate_reel_command,
+        install_cron_command,
+        remove_cron_command,
+        status_command,
+        upload_outbox_command,
+    )
+    from app.reels.config import load_reel_config
+    from app.reels.store import ReelStore
+
+    if args.command == "init-reel-db":
+        config = load_reel_config()
+        ReelStore(config.database_path).migrate()
+        print(f"Initialized reel database at {config.database_path}")
+        return 0
+    if args.command == "reel-status":
+        return status_command()
+    if args.command == "generate-reel":
+        return generate_reel_command(scheduled=args.scheduled, target=args.target)
+    if args.command == "deliver-existing":
+        return deliver_existing_command(Path(args.source))
+    if args.command == "upload-outbox":
+        return upload_outbox_command()
+    if args.command == "import-library":
+        from app.reels.catalog import import_library
+
+        imported = import_library(ReelStore(load_reel_config().database_path))
+        print("\n".join(imported) if imported else "no reels imported")
+        return 0 if imported else 1
+    if args.command == "install-cron":
+        return install_cron_command(apply=args.apply)
+    if args.command == "remove-cron":
+        return remove_cron_command()
     print(f"error: unknown command {args.command}", file=sys.stderr)
     return 2
 
@@ -162,3 +227,7 @@ def render_status(settings: Settings, snapshot: StatusSnapshot, capabilities: FF
         f"video encoder: {encoder}",
     ]
     return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

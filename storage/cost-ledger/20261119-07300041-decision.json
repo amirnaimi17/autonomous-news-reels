@@ -1,0 +1,12 @@
+{
+  "reel_rendered": false,
+  "reason": "The in-budget plan uses unbilled Edge TTS and local FFmpeg with zero new images. Paid keys are unset, Cursor images are unpriced, and Remotion has no rendered frame. No new MP4 was created.",
+  "ledger_row": {
+    "recorded_at": "2026-11-19T11:25:30Z",
+    "reel_id": "07300041-5a5b-46b5-bfde-99edea43819c",
+    "usd": 0.0,
+    "cost_kind": "estimate",
+    "allowed": true,
+    "reasons": []
+  }
+}

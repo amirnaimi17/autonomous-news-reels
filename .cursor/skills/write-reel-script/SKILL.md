@@ -7,8 +7,8 @@ description: Produce a testable fact-checked four-scene Reel script from an appr
 Use after `news-editor` approves. Follow `.cursor/skills/run-news-pilot/references/data-contract.md`.
 
 1. Ask/confirm language and intended audience once. For Persian, draft natural spoken Persian and review RTL punctuation, diacritics, numbers and names.
-2. Four scenes exactly: (1) truthful hook; (2) verified what happened; (3) verified significance; (4) useful takeaway and attribution. Avoid a misleading call-to-action.
-3. Persian Instagram Reels target 40 seconds, acceptable 38–42, so Farid can speak them at a natural rate. Other languages stay 30–50 seconds unless the user sets a length. Each scene has spoken narration, a short mobile caption, an image prompt, and a duration. Captions are **not** full transcriptions.
+2. Let the brief set the scene count. A complete report has a truthful hook, the context, the key development, why it matters, and a conclusion. Do not force three or four scenes, and do not stop the story early to match an old recording. Name who in Germany is affected. Keep an announcement date separate from the date a rule takes effect. A provider exception stays with that provider.
+3. Persian reports aim at 35–45 seconds. Completeness comes first, so a sourced ending may make the script longer. Write natural spoken Persian in short complete sentences, with the attribution in the same sentence as the claim. Do not plan on a faster rate. Digits may stay in the narration field; `persian-tts` prepares the spoken form for Aran. Each scene has spoken narration, a short mobile caption, a visual job, and a duration. Captions are **not** full transcriptions. Set `duration_policy` to `completeness` when the approved script is kept even if it falls outside 35–45 seconds.
 4. Every material claim, number, date and quotation must appear in `claims` with actual source URLs from fact pack; do not invent an explanation, trend, or outcome.
 5. Avoid quoting long copyrighted text and do not misrepresent creative visuals as event footage.
 6. Save `story_package.json` to `storage/generated/pilot/<run-id>/`. Do not modify app code or database.

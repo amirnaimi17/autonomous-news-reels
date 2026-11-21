@@ -8,6 +8,7 @@ __pycache__/
 dist/
 build/
 .env
+storage/studio-admin.txt
 data/
 *.db
 *.db-wal
@@ -17,3 +18,5 @@ storage/audio/*
 storage/videos/*
 storage/generated/*
 !storage/**/.gitkeep
+.cursor/skills/reel-video-design/.tools/
+.cursor/skills/reel-video-design/remotion-poc/node_modules/

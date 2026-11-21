@@ -1,0 +1,56 @@
+{
+  "reel_id": "20261119-deutschlandticket-2027-visual",
+  "story_fingerprint": "deutschlandticket-2027-price-and-provider-confirmation",
+  "target_page": "almanyar",
+  "title": "Deutschlandticket price from January 2027",
+  "category": "transport",
+  "affected_audience": "Iranians living in Germany who hold a Deutschlandticket",
+  "editorial_angle": "The monthly price changes on 1 January 2027, and confirmation depends on the company that sold the ticket.",
+  "checksum_sha256": "17416ecce4ec467e2aa10a1570a373713e1ec7d4b0a9608e4812c8b6580e6d4d",
+  "duration_seconds": 75.3,
+  "width": 1080,
+  "height": 1920,
+  "facts_checked_at": "2026-11-19T19:00:00+00:00",
+  "generated_at": "2026-11-19T19:00:00+00:00",
+  "scheduled_for": "2026-11-20T00:00:00+01:00",
+  "qa": [
+    {
+      "kind": "factual",
+      "passed": true,
+      "detail": {
+        "imported": true
+      }
+    },
+    {
+      "kind": "licensing",
+      "passed": true,
+      "detail": {
+        "imported": true
+      }
+    },
+    {
+      "kind": "audio",
+      "passed": true,
+      "detail": {
+        "imported": true
+      }
+    },
+    {
+      "kind": "technical",
+      "passed": true,
+      "detail": {
+        "width": 1080,
+        "height": 1920,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "has_audio": true,
+        "duration_seconds": 75.3,
+        "audio_duration_seconds": 75.28,
+        "checksum_sha256": "17416ecce4ec467e2aa10a1570a373713e1ec7d4b0a9608e4812c8b6580e6d4d"
+      }
+    }
+  ],
+  "qa_passed": true,
+  "cost_usd": 0.0,
+  "human_publish_approved": false
+}

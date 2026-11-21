@@ -5,7 +5,7 @@ This kit was designed for the public `autonomous-news-reels` project whose READM
 ## What is included?
 
 - Six role-based Cursor subagents: `news-researcher`, `news-editor`, `reel-scriptwriter`, `reel-producer`, `qa-verifier`, `integration-architect`.
-- Ten skills: `run-news-pilot`, `research-fact-pack`, `select-distinct-stories`, `write-reel-script`, `build-reel-storyboard`, `persian-tts`, `reel-video-design`, `render-reel-pilot`, `verify-reel-pilot`, `promote-to-runtime`. Persian speech and the MP4 stay on `reel-producer`.
+- Thirteen skills: `run-news-pilot`, `research-fact-pack`, `select-distinct-stories`, `write-reel-script`, `build-reel-storyboard`, `persian-tts`, `reel-image-generation`, `reel-video-design`, `reel-quality-assurance`, `reel-cost-tracking`, `render-reel-pilot`, `verify-reel-pilot`, `promote-to-runtime`. Speech, images, and the MP4 stay on `reel-producer`. Technical QA stays on `qa-verifier`.
 - A reusable data contract and a dependency-free JSON structural validator.
 - One explicitly **synthetic** story fixture. This fixture must never be published as real news.
 

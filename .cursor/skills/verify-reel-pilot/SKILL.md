@@ -16,10 +16,13 @@ An absent file is `NOT_RUN`. A JSON schema pass is **not** a factual pass.
 Compare all `claims` against source contents and timestamps, not merely URLs. Any unsupported figure, quote or causal statement blocks public release.
 
 ## Storyboard check
-Four 1080x1920 scene plans, timings matching story package, safe/readable captions, accurate illustration labels, Persian RTL preview where applicable.
+```
+python3 .cursor/skills/verify-reel-pilot/scripts/validate_visual_plan.py storage/generated/pilot/<run-id>/visual_plan.json
+```
+The scene count follows the script. A generated-image scene needs a complete English prompt with navy, yellow, and white, and no Persian type. Charts, maps, and timelines do not need an image prompt. Persian type belongs in Remotion.
 
 ## Voice check
-If `audio/voice_manifest.json` exists, `engine` must be `edge-tts`, `voice` must be `fa-IR-FaridNeural` unless the user chose another Edge voice, and `espeak_used` must be false. A manifest does not prove pronunciation. Mark audio BLOCKED for intelligibility until a person has listened.
+If `audio/voice_manifest.json` exists, accept ElevenLabs Aran (`eleven_v4`, voice `PEdcOLzbXYhL8IKOswXB`, language `fa`, speed `1.0`) or Edge Farid at `+0%`. `espeak_used` must be false. Timestamps must belong to that recording. A manifest does not prove pronunciation. Mark audio BLOCKED for intelligibility until a person has listened. Also run `reel-quality-assurance` for the technical probe and contact sheet.
 
 ## Video check (only if MP4 exists)
 ```

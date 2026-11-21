@@ -1,0 +1,14 @@
+{
+  "currency": "USD",
+  "active_phase": "quality_first",
+  "per_reel_max_usd": 0.5,
+  "monthly_target_usd": 60,
+  "phases": {
+    "quality_first": {"per_reel_target_usd": 0.5, "monthly_target_usd": 60, "reels_per_month": 120},
+    "optimization": {"per_reel_target_usd": 0.25, "monthly_target_usd": 30, "reels_per_month": 120},
+    "scale": {"per_reel_target_usd": 0.1, "monthly_target_usd": 12, "reels_per_month": 120}
+  },
+  "max_attempts": 2,
+  "experiment_max_usd": 0.5,
+  "note": "These are targets. A cleared estimate is not a proof that the provider billed that amount. The experiment cap covers one ElevenLabs sample plus one OpenAI image, and an unknown price stays blocked."
+}

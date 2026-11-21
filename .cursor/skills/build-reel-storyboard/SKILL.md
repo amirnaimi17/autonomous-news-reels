@@ -1,15 +1,17 @@
 ---
 name: build-reel-storyboard
-description: Convert an approved four-scene Reel script into a precise 9:16 visual plan with motion, captions, safe zones, and explicit generated-asset status.
+description: Turn an approved Reel script into a 9:16 visual plan. Choose a graphic or a photograph per scene, and write a full English image prompt only when a photograph is actually needed.
 ---
-# Four-scene storyboard
+# Visual art direction
 
-1. Read `story_package.json`; stop if not exactly four scenes.
-2. Produce a matched `visual_plan.json` with one scene for each script scene. Use 1080x1920, 30fps, readable high-contrast headline text and conservative title/safe areas (avoid lower UI overlays).
-3. For each scene specify subject, image-generation prompt, typography, caption placement, transitions, camera motion, duration and desired asset filename.
-4. Never claim to possess a generated image when only a prompt exists. Set `asset_path` to empty string until a real file has been produced.
-5. For factual news, illustrations must be recognizable as *illustrative*, not a fabricated photograph of an actual event. When needed include a visible generated-visuals disclaimer.
-6. For Persian, require testing of RTL line breaks and glyph shaping in a **real preview** rather than trusting generic FFmpeg text rendering.
-7. Save draft to the same `storage/generated/pilot/<run-id>/` as the script. Do not generate media or spend tokens/credits on third-party assets without consent.
+`reel-producer` owns this. Do not add a second visual agent.
 
-Show all four visual ideas to the user and ask for approval before production.
+1. Read the approved script and the news-director brief. The scene count follows the narration. Do not force three images.
+2. For each scene, choose one format: a licensed photograph, licensed video, a Remotion graphic, or an AI illustration. Prefer a photograph or video of the real setting when the license is clear and the crop works at 9:16. A graphic carries the numbers, dates, and provider exceptions. An AI illustration is the last option. A decorative frame is not a scene. Do not repeat a composition, and do not label a generic or older photograph as footage of the event itself.
+3. Keep one visual anchor when a document, object, or place can connect the scenes. Change the angle. Do not force a person into every scene. A reference image is only for a later photograph of that same object, and only after the cost gate.
+4. Write `image_prompt` only for an `editorial-photograph`. The prompt is standalone English and names the subject, environment, action, composition, camera, lighting, mood, foreground, background, depth, and negative space. Keep the palette dark navy, bright yellow, and white. Leave the safe area empty for type. Put no Persian words in the prompt.
+5. Set Persian headlines, numbers, captions, and subtitles in Remotion, right to left, inside about 250px from the top, 450px from the bottom, and 160px from the right.
+6. Record purpose, narration segment, format, why this format was chosen, anchor, motion, transition, duration, and expected cost. A graphic costs nothing. An empty `asset_path` means the file does not exist yet.
+7. Save `visual_plan.json` beside the script. Do not generate media or spend credits without approval.
+
+Show the plan and ask before any paid image call.

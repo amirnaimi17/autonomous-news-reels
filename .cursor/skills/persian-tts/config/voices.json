@@ -1,0 +1,56 @@
+{
+  "production": {
+    "name": "Aran",
+    "provider": "elevenlabs",
+    "model": "eleven_v4",
+    "voice_id": "PEdcOLzbXYhL8IKOswXB",
+    "language_code": "fa",
+    "speed": 1.0,
+    "selected_on": "2026-11-19",
+    "reason": "Chosen after the three-sample listening test."
+  },
+  "fallback": {
+    "name": "Farid",
+    "provider": "edge-tts",
+    "model": "fa-IR-FaridNeural",
+    "rate": "+0%"
+  },
+  "options": [
+    {
+      "name": "Aran",
+      "provider": "elevenlabs",
+      "model": "eleven_v4",
+      "voice_id": "PEdcOLzbXYhL8IKOswXB",
+      "language_code": "fa",
+      "speed": 1.0
+    },
+    {
+      "name": "Arash",
+      "provider": "elevenlabs",
+      "model": "eleven_v4",
+      "voice_id": "Mn0jJ3FC9Ijz7lQe8ELI",
+      "language_code": "fa",
+      "speed": 1.0
+    },
+    {
+      "name": "Connery",
+      "provider": "elevenlabs",
+      "model": "eleven_v4",
+      "voice_id": "4D8rX5FMrycxXbF6iW0I",
+      "language_code": "fa",
+      "speed": 1.0
+    },
+    {
+      "name": "Farid",
+      "provider": "edge-tts",
+      "model": "fa-IR-FaridNeural",
+      "rate": "+0%"
+    },
+    {
+      "name": "Dilara",
+      "provider": "edge-tts",
+      "model": "fa-IR-DilaraNeural",
+      "rate": "+0%"
+    }
+  ]
+}

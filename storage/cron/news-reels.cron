@@ -1,0 +1,4 @@
+# BEGIN autonomous-news-reels
+CRON_TZ=Europe/Berlin
+0 7,11,15,19 * * * cd /home/ba770_local/autonomous-news-reels && flock -n /home/ba770_local/autonomous-news-reels/storage/reels.lock /home/ba770_local/autonomous-news-reels/.venv/bin/python -m app.cli generate-reel --target almanyar --scheduled >> /home/ba770_local/autonomous-news-reels/storage/logs/generate-reel.log 2>&1
+# END autonomous-news-reels

@@ -60,8 +60,8 @@ def validate(data: object, *, allow_demo: bool = False) -> list[str]:
         errors.append("duration_seconds must be a positive finite number")
         duration = 0
     scenes = data.get("scenes")
-    if not isinstance(scenes, list) or len(scenes) != 4:
-        errors.append("scenes must contain exactly four scene objects")
+    if not isinstance(scenes, list) or not 3 <= len(scenes) <= 8:
+        errors.append("scenes must contain three to eight scene objects")
     else:
         total = 0.0
         for index, scene in enumerate(scenes, start=1):

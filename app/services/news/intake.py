@@ -262,6 +262,34 @@ def _open_event(
     return created.id
 
 
+def _stored_audience_filter(breakdown: str | None) -> str:
+    """Legacy rows have no filter and stay selectable by their saved score."""
+
+    if not breakdown:
+        return "legacy"
+    try:
+        payload = json.loads(breakdown)
+    except json.JSONDecodeError:
+        return "legacy"
+    if not isinstance(payload, dict):
+        return "legacy"
+    stored = payload.get("audience_filter")
+    return stored if stored in {"clear", "borderline", "none", "legacy", "approved"} else "legacy"
+
+
+def _stored_audience_tier(breakdown: str | None) -> str:
+    """Read a tier saved by a previous score. Older rows have no tier."""
+
+    if not breakdown:
+        return ""
+    try:
+        payload = json.loads(breakdown)
+    except json.JSONDecodeError:
+        return ""
+    tier = payload.get("audience_tier") if isinstance(payload, dict) else ""
+    return tier if tier in {"A", "B", "C"} else ""
+
+
 def _score_open_events(
     repository: NewsReelsRepository,
     *,
@@ -283,11 +311,14 @@ def _score_open_events(
         text = " ".join(f"{item.title} {item.summary}" for item in linked)
         opinion = any(is_opinion(item.canonical_url, item.title) for item in linked)
         sources = len({item.source_name for item in linked})
+        source_urls = [item.canonical_url for item in linked if item.canonical_url]
         scored = score_event(
             band=band,
             source_count=sources,
             impact=has_impact(text),
             opinion=opinion,
+            text=text,
+            source_urls=source_urls,
         )
         repository.update_event_assessment(
             event.id,
@@ -298,6 +329,10 @@ def _score_open_events(
                     "band": scored.band,
                     "source_count": scored.source_count,
                     "impact": scored.impact,
+                    "audience_filter": scored.audience_filter,
+                    "audience_tier": scored.audience_tier,
+                    "source_quality": scored.source_quality,
+                    "matched_terms": list(scored.matched_terms),
                 }
             ),
             event_description=linked[0].summary,
@@ -322,7 +357,14 @@ def _eligible_events(
         source_count = len({item.source_name for item in linked})
         from app.services.news.scoring import EventScore
 
-        scored = EventScore(event.importance_score, event.story_class, band, source_count, False)
+        scored = EventScore(
+            event.importance_score,
+            event.story_class,
+            band,
+            source_count,
+            False,
+            _stored_audience_filter(event.importance_breakdown),
+        )
         if not eligible(
             scored,
             minimum=settings.min_importance_score,
@@ -330,7 +372,14 @@ def _eligible_events(
         ):
             continue
         ranked.append(
-            RankedEvent(event.id, event.importance_score, event.story_class, band, source_count)
+            RankedEvent(
+                event.id,
+                event.importance_score,
+                event.story_class,
+                band,
+                source_count,
+                audience_tier=_stored_audience_tier(event.importance_breakdown),
+            )
         )
     return order_events(ranked)
 
