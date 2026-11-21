@@ -62,6 +62,8 @@ class ReelConfig:
     script_provider: str
     script_model: str
     script_output_dir: Path
+    elevenlabs_approved: bool
+    audio_output_dir: Path
 
     @property
     def zone(self) -> ZoneInfo:
@@ -100,5 +102,9 @@ def load_reel_config() -> ReelConfig:
         script_model=os.getenv("OPENAI_SCRIPT_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
         script_output_dir=Path(
             os.getenv("REEL_SCRIPT_OUTPUT_DIR", root / "storage" / "generated" / "reels" / "scripts")
+        ),
+        elevenlabs_approved=_flag("REEL_ELEVENLABS_APPROVED", False),
+        audio_output_dir=Path(
+            os.getenv("REEL_AUDIO_OUTPUT_DIR", root / "storage" / "generated" / "reels" / "audio")
         ),
     )

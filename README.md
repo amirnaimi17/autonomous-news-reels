@@ -9,7 +9,7 @@ A standalone Python application that discovers recent news, chooses distinct sto
 | 1 | Structure, configuration, database, quota, provider ports | Implemented |
 | 2 | News research, selection, 72-hour rule, duplicate clustering | Implemented. Selection does not start production. |
 | 3 | Script-writing agent | Persian grounded scripts via `write_grounded_script`. Pilot fact-pack / editorial / `story_package.json` contracts are reused. OpenAI chat is optional and mockable; extractive English fallback remains for the older `ScriptRequest` path. |
-| 4 | Image and voice agents | Not started. Solid-color frames and silent WAV files exist as offline stand-ins. |
+| 4 | Image and voice agents | Persian TTS via ElevenLabs Aran is wired through the existing `persian-tts` client (`narrate_aran`). Live HTTP requires explicit opt-in. Image generation is still later. |
 | 5 | FFmpeg reel render and file validation | Not started. Encoder selection and the acceptance rules exist. |
 | 6 | Telegram, scheduler, restart recovery of a live run | Not started. The database locks and slot heartbeat exist. |
 | 7 | End-to-end runs and deployment verification | Not started |
@@ -48,6 +48,37 @@ Copy `.env.example` to `.env` before adding tokens. The process reads environmen
 | `REEL_PAID_GENERATION` | `false` | Gates ElevenLabs narration and paid render. Script generation can run with the OpenAI provider while this stays false; the pipeline then stops at `blocked_paid` before voice. |
 
 Unit tests inject a mocked transport and never call OpenAI or ElevenLabs. Keep `REEL_PAID_GENERATION=false` and leave `ELEVENLABS_API_KEY` empty while iterating on scripts.
+
+### Phase 4 Persian TTS (ElevenLabs Aran)
+
+Narration reuses `.cursor/skills/persian-tts/scripts/elevenlabs.py` (no duplicate client). Defaults refuse live HTTP.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ELEVENLABS_API_KEY` | empty | Required only for a live paid speech call. Never hardcode or commit. |
+| `REEL_VOICE_ID` | `PEdcOLzbXYhL8IKOswXB` | Aran from `persian-tts/config/voices.json`. |
+| `REEL_ELEVENLABS_APPROVED` | `false` | Explicit opt-in for live ElevenLabs from `generate-reel` / `narrate_aran`. |
+| `REEL_AUDIO_OUTPUT_DIR` | `storage/generated/reels/audio` | Where MP3 files are written. |
+| `REEL_PAID_GENERATION` | `false` | Pipeline still stops before voice when false. |
+
+Safe voice-only dry run (prints the request, sends nothing):
+
+```bash
+.venv/bin/python -m app.cli speak-narration \
+  --text "خبر کوتاه برای آزمون صدا."
+```
+
+Live paid voice-only test (no video, cron, or publish). Requires an explicit `--approve` and a configured key:
+
+```bash
+export ELEVENLABS_API_KEY=...   # from your private shell / .env, never commit
+.venv/bin/python -m app.cli speak-narration \
+  --story-package storage/generated/reels/scripts/<event_id>/story_package.json \
+  --out storage/generated/reels/audio/manual-test.mp3 \
+  --approve
+```
+
+Do not set `REEL_PAID_GENERATION=true` for a voice-only check: that path also attempts Remotion video render. Prefer `speak-narration`.
 
 `INSTAGRAM_PUBLISH_ENABLED` must stay `false`. Setting it to `true` stops the process, because no publisher is installed.
 
