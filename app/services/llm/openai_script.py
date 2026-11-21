@@ -105,28 +105,54 @@ STORY_PACKAGE_JSON_SCHEMA: dict[str, Any] = {
 }
 
 
+_DEFAULT_SCRIPT_SYSTEM = (
+    "You are a news Reel scriptwriter. Reply with one JSON object only. "
+    "The top-level key scenes MUST be a JSON array of 3–8 scene objects "
+    "(never an object/map). Never invent facts outside the supplied fact pack. "
+    "visual_prompt values must be English photograph search descriptions, "
+    "not generic graphic or typography placeholders."
+)
+
+
 def chat_request(
     prompt: str,
     *,
     model: str = DEFAULT_MODEL,
-    use_json_schema: bool = True,
+    json_schema: dict[str, Any] | None = None,
+    schema_name: str = "pilot_story_package",
+    system_content: str | None = None,
+    use_json_schema: bool | None = None,
 ) -> dict[str, Any]:
-    """Build the Chat Completions body. The API key is never stored on this object."""
+    """Build the Chat Completions body. The API key is never stored on this object.
+
+    Pass ``json_schema`` for structured outputs. ``use_json_schema=True`` without a
+    custom schema keeps the story-package schema for script callers. Ranking and
+    other callers must pass their own schema (or ``use_json_schema=False``) so they
+    are never constrained to the story-package shape.
+    """
 
     spoken = prompt.strip()
     if not spoken:
         raise GroundingError("script prompt is empty")
-    if use_json_schema:
+    schema = json_schema
+    # Default remains story-package structured output for script callers.
+    schema_flag = True if use_json_schema is None and schema is None else use_json_schema
+    if schema is None and schema_flag is True:
+        schema = STORY_PACKAGE_JSON_SCHEMA
+        schema_name = "pilot_story_package"
+    if schema is not None:
         response_format: dict[str, Any] = {
             "type": "json_schema",
             "json_schema": {
-                "name": "pilot_story_package",
+                "name": schema_name,
                 "strict": True,
-                "schema": STORY_PACKAGE_JSON_SCHEMA,
+                "schema": schema,
             },
         }
+        default_system = _DEFAULT_SCRIPT_SYSTEM
     else:
         response_format = {"type": "json_object"}
+        default_system = "Reply with one JSON object only. Never invent facts outside the prompt."
     return {
         "method": "POST",
         "url": API_URL,
@@ -137,13 +163,7 @@ def chat_request(
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are a news Reel scriptwriter. Reply with one JSON object only. "
-                        "The top-level key scenes MUST be a JSON array of 3–8 scene objects "
-                        "(never an object/map). Never invent facts outside the supplied fact pack. "
-                        "visual_prompt values must be English photograph search descriptions, "
-                        "not generic graphic or typography placeholders."
-                    ),
+                    "content": (system_content or default_system).strip(),
                 },
                 {"role": "user", "content": spoken},
             ],
@@ -162,7 +182,10 @@ def complete_chat(
     model: str | None = None,
     api_key: str | None = None,
     transport: Transport | None = None,
-    use_json_schema: bool = True,
+    json_schema: dict[str, Any] | None = None,
+    schema_name: str = "pilot_story_package",
+    system_content: str | None = None,
+    use_json_schema: bool | None = None,
 ) -> dict[str, Any]:
     """Send or mock a chat completion and return the parsed assistant JSON object."""
 
@@ -171,19 +194,33 @@ def complete_chat(
     if not key:
         raise ConfigurationError(f"{ENV_NAME} is required for OpenAI script generation")
     chosen_model = (model or os.environ.get("OPENAI_SCRIPT_MODEL") or DEFAULT_MODEL).strip()
-    spec = chat_request(prompt, model=chosen_model, use_json_schema=use_json_schema)
+    # Script callers historically relied on the default story-package schema.
+    if json_schema is None and use_json_schema is None:
+        use_json_schema = True
+    using_schema = json_schema is not None or use_json_schema is True
+    spec = chat_request(
+        prompt,
+        model=chosen_model,
+        json_schema=json_schema,
+        schema_name=schema_name,
+        system_content=system_content,
+        use_json_schema=use_json_schema,
+    )
     sender = transport or _urllib_transport
     try:
         raw = sender(spec, key)
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
         # Some accounts/models reject json_schema; retry once with json_object.
-        if use_json_schema and error.code in {400, 404}:
+        if using_schema and error.code in {400, 404}:
             return complete_chat(
                 prompt,
                 model=chosen_model,
                 api_key=key,
                 transport=transport,
+                json_schema=None,
+                schema_name=schema_name,
+                system_content=system_content,
                 use_json_schema=False,
             )
         raise GroundingError(f"OpenAI returned HTTP {error.code}: {redact(detail, key)}") from None

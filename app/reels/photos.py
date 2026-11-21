@@ -247,7 +247,7 @@ def http_get_json(
             last_error = exc
             if log is not None:
                 log.add(action="http_get_json", url=url, attempt=attempt + 1, ok=False, status=exc.code)
-            if exc.code == 429 and attempt + 1 < retries:
+            if exc.code in {429, 500, 502, 503, 504} and attempt + 1 < retries:
                 time.sleep(5 * (attempt + 1))
                 continue
             raise PhotoError(f"HTTP {exc.code} for {url}") from exc
@@ -278,7 +278,13 @@ def search_openverse(
         "mature": "false",
     }
     url = OPENVERSE_API + "?" + urllib.parse.urlencode(params)
-    payload = http_get_json(url, transport=transport, log=log)
+    try:
+        payload = http_get_json(url, transport=transport, log=log)
+    except PhotoError as exc:
+        # Openverse outages (504/429) must not abort the whole reel; Commons still runs.
+        if log is not None:
+            log.add(action="search_openverse_failed", query=query, error=str(exc))
+        return []
     found: list[PhotoCandidate] = []
     for item in payload.get("results") or []:
         if not isinstance(item, dict):
@@ -602,63 +608,87 @@ def collect_scene_photos(
         )
         chosen_asset: PhotoAsset | None = None
         last_error: Exception | None = None
-        for chosen in _iter_candidates(
-            pools,
-            used_urls=used,
-            relevance_terms=terms,
-            log=log,
-            scene_number=scene_index + 1,
-        ):
-            ext = ".jpg"
-            lower = chosen.download_url.casefold()
-            if ".png" in lower:
-                ext = ".png"
-            elif ".webp" in lower:
-                ext = ".webp"
-            path = destination_dir / f"scene-{scene_index + 1:02d}{ext}"
-            try:
-                evidence = license_evidence_problems(
+        # Prefer strict relevance; if that yields nothing downloadable, retry with a
+        # topic-only filter, then a licensed-any fallback from the same search pools.
+        topic_terms = [
+            term
+            for term in relevance_terms_from_queries(queries[-2:] if len(queries) >= 2 else queries)
+            if term.casefold() not in {"close", "close-up", "photo", "photograph"}
+        ] or terms[:4]
+        attempt_terms = [terms, topic_terms, []]
+        for pass_index, active_terms in enumerate(attempt_terms):
+            if chosen_asset is not None:
+                break
+            if pass_index:
+                log.add(
+                    action="relax_relevance",
+                    scene=scene_index + 1,
+                    pass_index=pass_index,
+                    terms=active_terms[:8],
+                )
+            for chosen in _iter_candidates(
+                pools,
+                used_urls=used,
+                relevance_terms=active_terms,
+                log=log,
+                scene_number=scene_index + 1,
+            ):
+                ext = ".jpg"
+                lower = chosen.download_url.casefold()
+                if ".png" in lower:
+                    ext = ".png"
+                elif ".webp" in lower:
+                    ext = ".webp"
+                path = destination_dir / f"scene-{scene_index + 1:02d}{ext}"
+                try:
+                    evidence = license_evidence_problems(
+                        license_name=chosen.license_name,
+                        license_url=chosen.license_url,
+                        source_url=chosen.source_page,
+                        author=chosen.author,
+                    )
+                    if evidence:
+                        raise PhotoError("; ".join(evidence))
+                    download_image(chosen.download_url, path, transport=transport, log=log, retries=3)
+                    meta = validate_image_file(path)
+                except PhotoError as exc:
+                    last_error = exc
+                    if log is not None:
+                        log.add(
+                            action="candidate_failed",
+                            scene=scene_index + 1,
+                            url=chosen.download_url,
+                            error=str(exc),
+                        )
+                    continue
+                attribution = chosen.attribution or f"{chosen.author} / {chosen.license_name}"
+                chosen_asset = PhotoAsset(
+                    scene_index=scene_index,
+                    path=str(path.resolve()),
+                    source_url=chosen.source_page,
+                    download_url=chosen.download_url,
+                    author=chosen.author,
                     license_name=chosen.license_name,
                     license_url=chosen.license_url,
-                    source_url=chosen.source_page,
-                    author=chosen.author,
+                    attribution=attribution,
+                    width=int(meta["width"]),
+                    height=int(meta["height"]),
+                    bytes=int(meta["bytes"]),
+                    title=chosen.title,
+                    provider=chosen.provider,
                 )
-                if evidence:
-                    raise PhotoError("; ".join(evidence))
-                download_image(chosen.download_url, path, transport=transport, log=log, retries=3)
-                meta = validate_image_file(path)
-            except PhotoError as exc:
-                last_error = exc
-                if log is not None:
-                    log.add(action="candidate_failed", scene=scene_index + 1, url=chosen.download_url, error=str(exc))
-                continue
-            attribution = chosen.attribution or f"{chosen.author} / {chosen.license_name}"
-            chosen_asset = PhotoAsset(
-                scene_index=scene_index,
-                path=str(path.resolve()),
-                source_url=chosen.source_page,
-                download_url=chosen.download_url,
-                author=chosen.author,
-                license_name=chosen.license_name,
-                license_url=chosen.license_url,
-                attribution=attribution,
-                width=int(meta["width"]),
-                height=int(meta["height"]),
-                bytes=int(meta["bytes"]),
-                title=chosen.title,
-                provider=chosen.provider,
-            )
-            used.add(chosen.download_url)
-            used.add(chosen.source_page)
-            log.add(
-                action="assigned",
-                scene=scene_index + 1,
-                path=chosen_asset.path,
-                source=chosen_asset.source_url,
-                license=chosen_asset.license_name,
-                relevance=candidate_relevance_score(chosen, terms),
-            )
-            break
+                used.add(chosen.download_url)
+                used.add(chosen.source_page)
+                log.add(
+                    action="assigned",
+                    scene=scene_index + 1,
+                    path=chosen_asset.path,
+                    source=chosen_asset.source_url,
+                    license=chosen_asset.license_name,
+                    relevance=candidate_relevance_score(chosen, active_terms or terms),
+                    relaxed=pass_index > 0,
+                )
+                break
         if chosen_asset is None:
             raise PhotoError(
                 f"no downloadable licensed photograph for scene {scene_index + 1}; "
@@ -832,21 +862,46 @@ def build_scene_photo_queries(
             primary = visual
         topic_bits = title_tokens[:3] or summary_tokens[:3] or fact_tokens[:3]
         secondary = " ".join(visual_tokens if (visual_tokens and not graphic_like) else topic_bits)
-        tertiary = " ".join((title_tokens[:2] + fact_tokens[:2] + summary_tokens[:2])[:5])
+        english_topic = " ".join(
+            token
+            for token in (title_tokens + summary_tokens + fact_tokens)
+            if re.fullmatch(r"[A-Za-z][A-Za-z-]{2,}", token or "")
+        )
         scene_queries: list[str] = []
         if primary:
             scene_queries.append(primary)
             scene_queries.append(f"{primary} {germany}")
-        if secondary:
+        if secondary and re.search(r"[A-Za-z]{3,}", secondary):
             scene_queries.append(f"{secondary} {germany}".strip())
-        if tertiary:
-            scene_queries.append(f"{tertiary} photograph")
-        # Always keep a topic-anchored fallback tied to this story, never a fixed plate set.
-        scene_queries.append(f"{topic} {germany}")
+        # Prefer English Openverse/Commons queries; raw German title tokens rarely match.
+        if english_topic:
+            scene_queries.append(f"{english_topic} {germany}")
+            scene_queries.append(f"{english_topic} Berlin")
+        folded_visual = visual.casefold()
+        folded_topic = f"{candidate_title} {candidate_summary}".casefold()
+        if any(token in folded_visual for token in ("document", "legal", "law", "contract", "pen", "note", "calculator")):
+            scene_queries.append("calculator paperwork desk")
+            scene_queries.append("financial planning documents desk")
+            scene_queries.append("euro coins calculator Germany")
+        if any(token in folded_visual or token in folded_topic for token in ("pension", "riester", "alters", "retire", "vorsorge")):
+            scene_queries.append("retirement savings Germany")
+            scene_queries.append("pension documents Germany")
+        if any(token in folded_visual for token in ("family", "everyday", "community", "home", "people", "elderly")):
+            scene_queries.append("everyday life Germany city street")
+            scene_queries.append("Berlin residential street photograph")
+        # Durable English institutional fallbacks last so scene-specific prompts stay first.
+        scene_queries.extend(
+            [
+                "German parliament Berlin",
+                "German government building Berlin",
+                "Berlin city skyline photograph",
+                "euro banknotes Germany",
+            ]
+        )
         ordered = list(dict.fromkeys(item for item in scene_queries if item.strip()))
         if not ordered:
             raise PhotoError(f"scene {index + 1} produced no photo search queries")
-        queries.append(ordered[:4])
+        queries.append(ordered[:8])
     return queries
 
 
