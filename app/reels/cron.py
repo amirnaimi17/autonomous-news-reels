@@ -1,7 +1,8 @@
 """Ubuntu cron lines for four Berlin generation attempts.
 
 Installation writes a crontab fragment. It does not start a catch-up of
-missed hours. ``flock`` stops a second run while the first still holds the lock.
+missed hours. The Python generate-reel command owns the sole non-blocking
+lock; wrapping it in an external ``flock`` would double-lock the same file.
 """
 
 from __future__ import annotations
@@ -50,10 +51,9 @@ def cron_block(config: ReelConfig) -> str:
         python = config.working_directory / python
     python = python.absolute()
     work = config.working_directory.resolve()
-    lock = config.lock_path.resolve()
     log = config.log_path.resolve()
     command = (
-        f"cd {work} && flock -n {lock} {python} -m app.cli generate-reel "
+        f"cd {work} && {python} -m app.cli generate-reel "
         f"--target {config.target_page} --scheduled >> {log} 2>&1"
     )
     line = f"0 {hours} * * * {command}"
