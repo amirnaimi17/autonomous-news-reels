@@ -1,0 +1,43 @@
+name: Generate Aran narration for Berlin traffic reel
+on:
+  push:
+    branches: ["runs/almanyar-20261125-09-voice"]
+    paths: [".github/workflows/almanyar-20261125-09-voice.yml"]
+permissions:
+  contents: read
+jobs:
+  narrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Generate four Aran voiceover clips
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.error, urllib.request
+          key = os.environ.get("ELEVENLABS_API_KEY")
+          if not key:
+              raise SystemExit("ELEVENLABS_API_KEY is unavailable to this run.")
+          lines = ["اگه امروز توی برلین رانندگی می‌کنی، سه ساعت رو به خاطر بسپار: دوازده ظهر، شش عصر و ده شب. مرکز اطلاعات ترافیک برلین برای هر سه نوبت محدودیت اعلام کرده.","اول، از دوازده ظهر تا سه بعدازظهر. مسیر راهپیمایی از اورانین‌پلاتس در کرویتسبرگ، از کوت‌بوسر تور و هرمان‌پلاتس می‌گذره و به ساختمان شهرداری نوی‌کولن می‌رسه.","دوم، از شش تا نه شب در مرکز برلین. مسیر راهپیمایی از پاریزر پلاتس شروع می‌شه و از اونتر دن لیندن و فریدریش‌اشتراسه می‌گذره.","و آخر، از ده امشب تا پنج صبح پنج‌شنبه. روی پل رودولف ویسل در اتوبان آ صد، به‌خاطر کار روی پل، تردد به یک خط محدود می‌شه. اگه از این مسیرها رد می‌شی، قبل از حرکت وضعیت لحظه‌ای رو چک کن."]
+          out = pathlib.Path("narration")
+          out.mkdir()
+          for i, text in enumerate(lines, start=1):
+              payload = {"text": text, "model_id": "eleven_v4", "language_code": "fa", "apply_text_normalization": "off", "voice_settings": {"speed": 1.0, "style": 0}}
+              req = urllib.request.Request("https://api.elevenlabs.io/v1/text-to-speech/PEdcOLzbXYhL8IKOswXB?output_format=mp3_44100_128", json.dumps(payload, ensure_ascii=False).encode(), {"xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg"})
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as response:
+                      data = response.read()
+                      if not data or not response.headers.get("Content-Type", "").startswith("audio/"):
+                          raise SystemExit(f"Scene {i}: ElevenLabs response was not audio.")
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f"Scene {i}: ElevenLabs HTTP {error.code}.") from None
+              (out / f"scene-{i}.mp3").write_bytes(data)
+          PY
+      - name: Upload narration
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: almanyar-traffic-aran
+          path: narration/*.mp3
+          if-no-files-found: error
+          retention-days: 2
