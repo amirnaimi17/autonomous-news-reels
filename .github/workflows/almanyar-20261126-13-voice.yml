@@ -1,0 +1,43 @@
+name: Generate Aran narration for Digital driving licence Reel
+on:
+  push:
+    branches: ["runs/almanyar-20261126-13-voice"]
+    paths: [".github/workflows/almanyar-20261126-13-voice.yml"]
+permissions:
+  contents: read
+jobs:
+  narrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Generate four Aran voiceover clips
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.error, urllib.request
+          key = os.environ.get("ELEVENLABS_API_KEY")
+          if not key:
+              raise SystemExit("ELEVENLABS_API_KEY is unavailable to this run.")
+          lines = ["از کی می‌تونی گواهینامهٔ آلمانی‌ات رو توی گوشی نشون بدی؟ قرار بود آخر نوامبر شروع بشه، ولی امروز خبر رسید که زمانش عقب افتاده.","طبق اعلام سخنگوی وزارت حمل‌ونقل آلمان، قرار شده تا اواسط دسامبر گواهینامهٔ دیجیتال در اپلیکیشن آی کِ فا ست در دسترس قرار بگیره. فعلاً هنوز فعال نشده.","بعد از فعال شدن، داخل آلمان می‌تونی گواهینامه رو با گوشی نشون بدی؛ اما در دورهٔ انتقالی باید کارت شناسایی یا پاسپورتت رو هم همراه داشته باشی. چون تبادل عکس هویتی هنوز آماده نیست.","گواهینامهٔ کارتیت همچنان معتبر می‌مونه. برای رانندگی خارج از آلمان هم فعلاً کارت فیزیکی رو همراه داشته باش. تا زمان راه‌اندازی رسمی، گواهینامهٔ کارتیت رو مثل قبل همراهت ببر."]
+          out = pathlib.Path("narration")
+          out.mkdir()
+          for i, text in enumerate(lines, start=1):
+              payload = {"text": text, "model_id": "eleven_v4", "language_code": "fa", "apply_text_normalization": "off", "voice_settings": {"speed": 1.0, "style": 0}}
+              req = urllib.request.Request("https://api.elevenlabs.io/v1/text-to-speech/PEdcOLzbXYhL8IKOswXB?output_format=mp3_44100_128", json.dumps(payload, ensure_ascii=False).encode(), {"xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg"})
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as response:
+                      data = response.read()
+                      if not data or not response.headers.get("Content-Type", "").startswith("audio/"):
+                          raise SystemExit(f"Scene {i}: ElevenLabs response was not audio.")
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f"Scene {i}: ElevenLabs HTTP {error.code}.") from None
+              (out / f"scene-{i}.mp3").write_bytes(data)
+          PY
+      - name: Upload narration
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: almanyar-licence-aran
+          path: narration/*.mp3
+          if-no-files-found: error
+          retention-days: 2
