@@ -1,0 +1,43 @@
+name: Generate Aran narration for German real wages Reel
+on:
+  push:
+    branches: ["runs/almanyar-20261126-09-voice"]
+    paths: [".github/workflows/almanyar-20261126-09-voice.yml"]
+permissions:
+  contents: read
+jobs:
+  narrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Generate four Aran voiceover clips
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.error, urllib.request
+          key = os.environ.get("ELEVENLABS_API_KEY")
+          if not key:
+              raise SystemExit("ELEVENLABS_API_KEY is unavailable to this run.")
+          lines = ["اگه حقوقت امسال چهار درصد بیشتر شده، یعنی واقعاً چهار درصد پولدارتر شدی؟ جواب آمار تازهٔ آلمان که امروز منتشر شد، جالبه.","ادارهٔ آمار آلمان می‌گه حقوق اسمی کارکنان در سه‌ماههٔ سوم امسال نسبت به همین مدت پارسال، به‌طور متوسط چهار و سه دهم درصد بالا رفته.","اما قیمت کالاها و خدمات هم تو همین مدت دو و نه دهم درصد بیشتر شده. برای همین افزایش قدرت خرید، یعنی دستمزد واقعی، فقط یک و سه دهم درصد بوده.","همهٔ شغل‌ها هم یکسان نبودن. حقوق اسمی در بخش انرژی شش و هفت دهم درصد رشد کرده، اما در خدمات حرفه‌ای، علمی و فنی سه و دو دهم درصد. این میانگین‌ها هستن و افزایش حقوق هر نفر ممکنه متفاوت باشه."]
+          out = pathlib.Path("narration")
+          out.mkdir()
+          for i, text in enumerate(lines, start=1):
+              payload = {"text": text, "model_id": "eleven_v4", "language_code": "fa", "apply_text_normalization": "off", "voice_settings": {"speed": 1.0, "style": 0}}
+              req = urllib.request.Request("https://api.elevenlabs.io/v1/text-to-speech/PEdcOLzbXYhL8IKOswXB?output_format=mp3_44100_128", json.dumps(payload, ensure_ascii=False).encode(), {"xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg"})
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as response:
+                      data = response.read()
+                      if not data or not response.headers.get("Content-Type", "").startswith("audio/"):
+                          raise SystemExit(f"Scene {i}: ElevenLabs response was not audio.")
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f"Scene {i}: ElevenLabs HTTP {error.code}.") from None
+              (out / f"scene-{i}.mp3").write_bytes(data)
+          PY
+      - name: Upload narration
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: almanyar-wages-aran
+          path: narration/*.mp3
+          if-no-files-found: error
+          retention-days: 2
