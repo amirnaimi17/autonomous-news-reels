@@ -1,0 +1,43 @@
+name: Generate Aran narration for Hafez and Goethe preview
+on:
+  push:
+    branches: ["runs/almanyar-hafez-goethe-20261127-preview-voice"]
+    paths: [".github/workflows/almanyar-hafez-goethe-20261127-preview-voice.yml"]
+permissions:
+  contents: read
+jobs:
+  narrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Generate four Aran voiceover clips
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.error, urllib.request
+          key = os.environ.get("ELEVENLABS_API_KEY")
+          if not key:
+              raise SystemExit("ELEVENLABS_API_KEY is unavailable to this run.")
+          lines = ["می‌دونستی توی یکی از شهرهای آلمان، دو تا صندلی سنگی به یاد حافظ شیرازی و گوته ساخته شده؟ اما این دو شاعر هیچ‌وقت همدیگه رو ندیدن.","گوته سال هزار و هشتصد و چهارده ترجمه آلمانی دیوان حافظ رو خوند. شعرهای حافظ انقدر روش تأثیر گذاشت که گوته در شعر خودش، حافظ رو همزاد خطاب کرد.","پنج سال بعد، در هزار و هشتصد و نوزده، مجموعه شعر دیوان غربی شرقی گوته منتشر شد. اثری که از شعر حافظ الهام گرفته بود.","در سال دو هزار، توی شهر وایمار آلمان، یادبود حافظ و گوته افتتاح شد. دو صندلی رو به روی هم، نمادی از گفتگوی دو شاعر و دو فرهنگه. اگه رفتی وایمار، توی بتهوون پلاتس می‌تونی این یادبود رو پیدا کنی."]
+          out = pathlib.Path("narration")
+          out.mkdir()
+          for i, text in enumerate(lines, start=1):
+              payload = {"text": text, "model_id": "eleven_v4", "language_code": "fa", "apply_text_normalization": "off", "voice_settings": {"speed": 1.0, "style": 0}}
+              req = urllib.request.Request("https://api.elevenlabs.io/v1/text-to-speech/PEdcOLzbXYhL8IKOswXB?output_format=mp3_44100_128", json.dumps(payload, ensure_ascii=False).encode(), {"xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg"})
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as response:
+                      data = response.read()
+                      if not data or not response.headers.get("Content-Type", "").startswith("audio/"):
+                          raise SystemExit(f"Scene {i}: ElevenLabs response was not audio.")
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f"Scene {i}: ElevenLabs HTTP {error.code}.") from None
+              (out / f"scene-{i}.mp3").write_bytes(data)
+          PY
+      - name: Upload narration
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: almanyar-hafez-goethe-aran
+          path: narration/*.mp3
+          if-no-files-found: error
+          retention-days: 2
