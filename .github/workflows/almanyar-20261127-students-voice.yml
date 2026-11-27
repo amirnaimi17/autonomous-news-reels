@@ -1,0 +1,43 @@
+name: Generate Aran narration for Digital driving licence Reel
+on:
+  push:
+    branches: ["runs/almanyar-20261127-students-voice"]
+    paths: [".github/workflows/almanyar-20261127-students-voice.yml"]
+permissions:
+  contents: read
+jobs:
+  narrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Generate four Aran voiceover clips
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.error, urllib.request
+          key = os.environ.get("ELEVENLABS_API_KEY")
+          if not key:
+              raise SystemExit("ELEVENLABS_API_KEY is unavailable to this run.")
+          lines = ["تعداد دانشجوهای آلمان چقدر تغییر کرده؟ آمار رسمی امروز منتشر شد. نزدیک دو میلیون و هشتصد و شصت هزار نفر در دانشگاه‌های آلمان درس می‌خونن.","در مقایسه با پارسال، تعداد کل دانشجوها دو دهم درصد کمتر شده. اما تعداد دانشجوهای دانشگاه‌های علوم کاربردی بیشتر شده.","یه نکته جالب هم برای علاقه‌مندان کامپیوتر: تعداد ورودی‌های رشته انفورماتیک چهار درصد کمتر شده.","این آمار اولیه مربوط به ترم زمستانی امساله. اگر قصد تحصیل داری، شرایط دانشگاه و رشته مورد نظرت رو جداگانه بررسی کن."]
+          out = pathlib.Path("narration")
+          out.mkdir()
+          for i, text in enumerate(lines, start=1):
+              payload = {"text": text, "model_id": "eleven_v4", "language_code": "fa", "apply_text_normalization": "off", "voice_settings": {"speed": 1.0, "style": 0}}
+              req = urllib.request.Request("https://api.elevenlabs.io/v1/text-to-speech/PEdcOLzbXYhL8IKOswXB?output_format=mp3_44100_128", json.dumps(payload, ensure_ascii=False).encode(), {"xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg"})
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as response:
+                      data = response.read()
+                      if not data or not response.headers.get("Content-Type", "").startswith("audio/"):
+                          raise SystemExit(f"Scene {i}: ElevenLabs response was not audio.")
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f"Scene {i}: ElevenLabs HTTP {error.code}.") from None
+              (out / f"scene-{i}.mp3").write_bytes(data)
+          PY
+      - name: Upload narration
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: almanyar-students-aran
+          path: narration/*.mp3
+          if-no-files-found: error
+          retention-days: 2
