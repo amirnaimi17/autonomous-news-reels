@@ -1,0 +1,80 @@
+name: Patch Persian layout for Almanyar noon reel
+on:
+  push:
+    branches: ["runs/almanyar-20261128-12-ai-liability"]
+    paths: [".github/workflows/almanyar-20261128-12-ai-liability-patch.yml"]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: runs/almanyar-20261128-12-ai-liability
+      - name: Install visual dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl
+          python3 -m pip install --user pillow
+          curl --fail --location --retry 3 --output Vazirmatn-Bold.ttf https://raw.githubusercontent.com/rastikerdar/vazirmatn/master/fonts/ttf/Vazirmatn-Bold.ttf
+      - name: Build corrected second scene
+        run: |
+          python3 - <<'PY'
+          from PIL import Image, ImageDraw, ImageFont
+          W,H=1080,1920
+          c1,c2=(45,18,80),(88,28,135)
+          im=Image.new("RGB",(W,H),c1); p=im.load()
+          for y in range(H):
+              t=y/(H-1); col=tuple(int(c1[k]*(1-t)+c2[k]*t) for k in range(3))
+              for x in range(W): p[x,y]=col
+          d=ImageDraw.Draw(im)
+          font_path="Vazirmatn-Bold.ttf"
+          headline=ImageFont.truetype(font_path,70)
+          body=ImageFont.truetype(font_path,48)
+          d.line((540,170,540,850),fill=(250,204,21),width=28)
+          d.line((260,330,820,330),fill=(250,204,21),width=24)
+          for cx in (300,780):
+              d.line((cx,330,cx-120,650),fill=(250,204,21),width=12)
+              d.line((cx,330,cx+120,650),fill=(250,204,21),width=12)
+              d.arc((cx-160,570,cx+160,820),0,180,fill=(250,204,21),width=22)
+          d.rounded_rectangle((350,500,730,850),40,fill=(15,23,42),outline=(216,180,254),width=8)
+          d.text((418,580),"</>",font=ImageFont.truetype(font_path,105),fill=(216,180,254))
+          d.rounded_rectangle((55,1020,1025,1810),55,fill=(20,10,35),outline=(255,255,255),width=3)
+          y=1100
+          for line in ["نرم‌افزار و هوش مصنوعی","هم «محصول» حساب","می‌شوند"]:
+              d.text((960,y),line,font=headline,fill="white",direction="rtl",anchor="ra")
+              y+=105
+          y=1470
+          for line in ["سازندهٔ محصول دیجیتال معیوب","ممکن است مسئول خسارت باشد"]:
+              d.text((940,y),line,font=body,fill=(233,213,255),direction="rtl",anchor="ra")
+              y+=82
+          im.save("scene-2-corrected.png")
+          PY
+      - name: Replace only scene two and preserve approved Aran audio
+        run: |
+          set -euo pipefail
+          input=deliveries/almanyar-20261128-12-ai-liability.mp4
+          duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$input")
+          ffmpeg -hide_banner -loglevel error -y -i "$input" -loop 1 -framerate 30 -i scene-2-corrected.png             -filter_complex "[1:v]scale=1080:1920,format=yuv420p[ov];[0:v][ov]overlay=enable='between(t,11.922982,26.622982)'[v]"             -map "[v]" -map 0:a -t "$duration" -c:v libx264 -preset medium -crf 19 -c:a copy -movflags +faststart patched.mp4
+          mv patched.mp4 "$input"
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$input")" = "1080"
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$input")" = "1920"
+          test "$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "$input")" = "audio"
+          ffprobe -v error -show_entries format=duration,size -of json "$input"
+          sha256sum "$input"
+      - name: Commit corrected verified delivery
+        run: |
+          git config user.name "Almanyar Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add deliveries/almanyar-20261128-12-ai-liability.mp4
+          git commit -m "Correct Persian layout in AI product liability reel"
+          git push origin HEAD:runs/almanyar-20261128-12-ai-liability
+      - name: Upload corrected artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: almanyar-20261128-12-ai-liability-final
+          path: deliveries/almanyar-20261128-12-ai-liability.mp4
+          if-no-files-found: error
+          retention-days: 3
