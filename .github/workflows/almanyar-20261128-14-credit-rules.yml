@@ -1,0 +1,153 @@
+name: Build Almanyar new credit rules reel
+on:
+  push:
+    branches: ["runs/almanyar-20261128-14-credit-rules"]
+    paths: [".github/workflows/almanyar-20261128-14-credit-rules.yml"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: runs/almanyar-20261128-14-credit-rules
+      - name: Install rendering dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl
+          python3 -m pip install --user pillow
+          curl --fail --location --retry 3 --output Vazirmatn-Bold.ttf https://raw.githubusercontent.com/rastikerdar/vazirmatn/master/fonts/ttf/Vazirmatn-Bold.ttf
+      - name: Generate Aran narration
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, time, urllib.error, urllib.request
+          key=os.environ.get("ELEVENLABS_API_KEY")
+          if not key: raise SystemExit("ELEVENLABS_API_KEY is unavailable to this run.")
+          lines=[
+            "تا حالا با گزینهٔ الان بخر، بعداً پرداخت کن، چیزی گرفته‌ای؟ از بیستم نوامبر، در آلمان همین خریدهای کوچک هم بیشتر شبیه یک قرارداد اعتباری واقعی دیده می‌شوند.",
+            "قانون جدید، وام‌های تا دویست یورو، اعتبارهای بدون بهره، قراردادهای کوتاه تا سه ماه و مدل‌های بای ناو پی لیتر را هم زیر حمایت‌های اعتبار مصرف‌کننده می‌برد.",
+            "یعنی فروشنده یا اعتباردهنده باید قبل از قرارداد اطلاعات بیشتری بدهد و توان بازپرداخت را دقیق‌تر بررسی کند. اگر این بررسی کاملاً خودکار باشد، حق داری یک انسان نتیجه را دوباره بررسی کند.",
+            "اما یک نکته: برای قرارداد اعتبار عمومی، دیگر امضای کاغذی لازم نیست و متن در ایمیل یا اپ کافی است. پس قبل از زدن دکمهٔ تأیید، مبلغ نهایی، بهره و موعدها را دقیق بخوان."
+          ]
+          out=pathlib.Path("narration"); out.mkdir(exist_ok=True)
+          for i,text in enumerate(lines,1):
+            payload={"text":text,"model_id":"eleven_v4","language_code":"fa","apply_text_normalization":"off","voice_settings":{"speed":1.0,"style":0}}
+            for attempt in range(1,5):
+              req=urllib.request.Request("https://api.elevenlabs.io/v1/text-to-speech/PEdcOLzbXYhL8IKOswXB?output_format=mp3_44100_128",json.dumps(payload,ensure_ascii=False).encode(),{"xi-api-key":key,"Content-Type":"application/json","Accept":"audio/mpeg"})
+              try:
+                with urllib.request.urlopen(req,timeout=60) as response:
+                  data=response.read(); ctype=response.headers.get("Content-Type","")
+                  if not data or not ctype.startswith("audio/"): raise RuntimeError("response was not audio")
+                (out/f"scene-{i}.mp3").write_bytes(data)
+                print(f"scene {i}: narration ready ({len(data)} bytes)")
+                break
+              except (urllib.error.URLError,urllib.error.HTTPError,TimeoutError,RuntimeError) as exc:
+                code=getattr(exc,"code",None)
+                if code and 400<=code<500 and code!=429: raise SystemExit(f"scene {i}: permanent ElevenLabs HTTP {code}") from None
+                if attempt==4: raise SystemExit(f"scene {i}: narration failed after 4 attempts: {type(exc).__name__}") from None
+                time.sleep(5)
+          PY
+      - name: Create four distinct Persian scenes
+        run: |
+          python3 - <<'PY'
+          from PIL import Image,ImageDraw,ImageFont
+          import pathlib,math
+          W,H=1080,1920; fp="Vazirmatn-Bold.ttf"
+          big=ImageFont.truetype(fp,70); med=ImageFont.truetype(fp,49); small=ImageFont.truetype(fp,38)
+          def base(a,b):
+            im=Image.new("RGB",(W,H),a); p=im.load()
+            for y in range(H):
+              t=y/(H-1); col=tuple(int(a[k]*(1-t)+b[k]*t) for k in range(3))
+              for x in range(W): p[x,y]=col
+            return im
+          def lines(d,items,y,font,fill="white",x=950,gap=22):
+            for s in items:
+              box=d.textbbox((0,0),s,font=font,direction="rtl")
+              d.text((x,y),s,font=font,fill=fill,direction="rtl",anchor="ra")
+              y+=(box[3]-box[1])+gap
+            return y
+          out=pathlib.Path("scenes"); out.mkdir(exist_ok=True)
+          # Scene 1: shopping cart and BNPL
+          im=base((7,35,55),(13,92,114)); d=ImageDraw.Draw(im)
+          d.line((180,250,260,250,360,720,820,720,900,380,300,380),fill=(103,232,249),width=22,joint="curve")
+          d.ellipse((360,760,470,870),fill=(249,115,22)); d.ellipse((730,760,840,870),fill=(249,115,22))
+          for x in (395,540,685):
+            d.rounded_rectangle((x-55,450,x+55,590),20,fill=(226,232,240),outline=(103,232,249),width=5)
+          d.rounded_rectangle((170,900,910,1090),45,fill=(249,115,22))
+          d.text((540,995),"الان بخر، بعداً پرداخت کن",font=ImageFont.truetype(fp,55),fill=(15,23,42),direction="rtl",anchor="mm")
+          d.rounded_rectangle((55,1170,1025,1810),55,fill=(3,20,32),outline="white",width=3)
+          lines(d,["فقط یک دکمهٔ ساده نیست","این هم می‌تواند قرارداد اعتباری باشد"],1250,big)
+          lines(d,["قانون تازه از ۲۰ نوامبر اجرا شده"],1560,med,fill=(165,243,252))
+          im.save(out/"scene-1.png")
+          # Scene 2: small amounts protected
+          im=base((63,20,75),(126,34,129)); d=ImageDraw.Draw(im)
+          d.ellipse((280,120,800,640),fill=(250,204,21),outline=(254,240,138),width=10)
+          d.text((540,365),"€",font=ImageFont.truetype(fp,250),fill=(88,28,135),anchor="mm")
+          d.rounded_rectangle((130,650,950,1030),70,fill=(255,255,255),outline=(216,180,254),width=8)
+          d.text((540,790),"تا ۲۰۰ یورو",font=ImageFont.truetype(fp,105),fill=(88,28,135),direction="rtl",anchor="mm")
+          d.text((540,930),"بدون بهره • تا سه ماه • BNPL",font=small,fill=(88,28,135),direction="rtl",anchor="mm")
+          d.rounded_rectangle((55,1110,1025,1810),55,fill=(32,9,41),outline="white",width=3)
+          lines(d,["حمایت قانون گسترده‌تر شد"],1190,big)
+          lines(d,["خریدهای کوچک و بعضی اعتبارهای بدون بهره","دیگر بیرون از قواعد اصلی نمی‌مانند"],1450,med,fill=(233,213,255))
+          im.save(out/"scene-2.png")
+          # Scene 3: automated score and human review
+          im=base((6,68,58),(15,118,110)); d=ImageDraw.Draw(im)
+          d.rounded_rectangle((120,120,960,720),60,fill=(240,253,250),outline=(45,212,191),width=8)
+          d.ellipse((190,230,470,510),fill=(15,23,42)); d.text((330,370),"AI",font=ImageFont.truetype(fp,100),fill=(94,234,212),anchor="mm")
+          for y,w in ((250,350),(350,270),(450,400),(550,230)):
+            d.rounded_rectangle((520,y,520+w,y+55),25,fill=(20,184,166))
+          d.line((540,720,540,850),fill=(153,246,228),width=18)
+          d.ellipse((350,820,730,1200),fill=(15,23,42),outline=(153,246,228),width=8)
+          d.ellipse((465,880,615,1030),fill=(240,253,250)); d.arc((420,1000,660,1160),180,360,fill=(240,253,250),width=35)
+          d.rounded_rectangle((55,1250,1025,1810),55,fill=(3,45,38),outline="white",width=3)
+          lines(d,["تصمیم خودکار؟","حق بررسی انسانی داری"],1325,big)
+          lines(d,["اگر اعتبارسنجی کاملاً خودکار باشد","می‌توانی بازبینی انسانی بخواهی"],1580,med,fill=(204,251,241))
+          im.save(out/"scene-3.png")
+          # Scene 4: email/app contract warning
+          im=base((87,28,28),(153,27,27)); d=ImageDraw.Draw(im)
+          d.rounded_rectangle((160,130,920,930),65,fill=(255,247,237),outline=(254,202,202),width=8)
+          d.polygon([(240,320),(540,560),(840,320)],fill=(254,202,202))
+          d.line((240,320,540,590,840,320),fill=(185,28,28),width=18)
+          d.rounded_rectangle((250,650,830,820),35,fill=(185,28,28))
+          d.text((540,735),"تأیید در اپ",font=ImageFont.truetype(fp,62),fill="white",direction="rtl",anchor="mm")
+          d.rounded_rectangle((55,1020,1025,1810),55,fill=(69,10,10),outline="white",width=3)
+          lines(d,["امضای کاغذی لازم نیست"],1100,big)
+          lines(d,["ایمیل یا تأیید داخل اپ می‌تواند کافی باشد","پس مبلغ نهایی، بهره و موعدها را بخوان"],1360,med,fill=(254,226,226))
+          d.rounded_rectangle((140,1640,940,1760),28,fill=(34,197,94))
+          d.text((540,1700),"قبل از تأیید، جزئیات را چک کن",font=small,fill="white",direction="rtl",anchor="mm")
+          im.save(out/"scene-4.png")
+          PY
+      - name: Render and validate MP4
+        run: |
+          set -euo pipefail
+          mkdir -p segments deliveries
+          for i in 1 2 3 4; do
+            ad=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "narration/scene-$i.mp3")
+            duration=$(python3 -c "print(round(float('$ad')+0.55,3))")
+            ffmpeg -hide_banner -loglevel error -y -loop 1 -framerate 30 -i "scenes/scene-$i.png" -i "narration/scene-$i.mp3"               -filter_complex "[0:v]scale=1200:2134,zoompan=z='min(zoom+0.00065,1.07)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1920:fps=30,format=yuv420p[v]"               -map "[v]" -map 1:a -t "$duration" -c:v libx264 -preset medium -crf 19 -c:a aac -b:a 192k -movflags +faststart "segments/scene-$i.mp4"
+          done
+          printf "file 'scene-1.mp4'\nfile 'scene-2.mp4'\nfile 'scene-3.mp4'\nfile 'scene-4.mp4'\n" > segments/list.txt
+          ffmpeg -hide_banner -loglevel error -y -f concat -safe 0 -i segments/list.txt -c copy deliveries/almanyar-20261128-14-credit-rules.mp4
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 deliveries/almanyar-20261128-14-credit-rules.mp4)" = 1080
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 deliveries/almanyar-20261128-14-credit-rules.mp4)" = 1920
+          test "$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 deliveries/almanyar-20261128-14-credit-rules.mp4)" = audio
+          ffprobe -v error -show_entries format=duration,size -of json deliveries/almanyar-20261128-14-credit-rules.mp4
+          sha256sum deliveries/almanyar-20261128-14-credit-rules.mp4
+      - name: Commit verified delivery
+        run: |
+          git config user.name "Almanyar Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add deliveries/almanyar-20261128-14-credit-rules.mp4
+          git commit -m "Add verified new credit rules reel for 28 November"
+          git push origin HEAD:runs/almanyar-20261128-14-credit-rules
+      - name: Upload verified artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: almanyar-20261128-14-credit-rules
+          path: deliveries/almanyar-20261128-14-credit-rules.mp4
+          if-no-files-found: error
+          retention-days: 3
