@@ -1,0 +1,83 @@
+name: Patch Almanyar credit rules visual QA
+on:
+  push:
+    branches: ["runs/almanyar-20261128-14-credit-rules"]
+    paths: [".github/workflows/patch-almanyar-20261128-14-credit-rules.yml"]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: runs/almanyar-20261128-14-credit-rules
+      - name: Install patch dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl
+          python3 -m pip install --user pillow
+          curl --fail --location --retry 3 --output Vazirmatn-Bold.ttf https://raw.githubusercontent.com/rastikerdar/vazirmatn/master/fonts/ttf/Vazirmatn-Bold.ttf
+      - name: Create corrected first scene
+        run: |
+          python3 - <<'PY'
+          from PIL import Image,ImageDraw,ImageFont
+          W,H=1080,1920; fp="Vazirmatn-Bold.ttf"
+          big=ImageFont.truetype(fp,62); med=ImageFont.truetype(fp,49)
+          def base(a,b):
+            im=Image.new("RGB",(W,H),a); p=im.load()
+            for y in range(H):
+              t=y/(H-1); col=tuple(int(a[k]*(1-t)+b[k]*t) for k in range(3))
+              for x in range(W): p[x,y]=col
+            return im
+          def lines(d,items,y,font,fill="white",x=950,gap=25):
+            for s in items:
+              box=d.textbbox((0,0),s,font=font,direction="rtl")
+              d.text((x,y),s,font=font,fill=fill,direction="rtl",anchor="ra")
+              y+=(box[3]-box[1])+gap
+          im=base((7,35,55),(13,92,114)); d=ImageDraw.Draw(im)
+          d.line((180,250,260,250,360,720,820,720,900,380,300,380),fill=(103,232,249),width=22,joint="curve")
+          d.ellipse((360,760,470,870),fill=(249,115,22)); d.ellipse((730,760,840,870),fill=(249,115,22))
+          for x in (395,540,685):
+            d.rounded_rectangle((x-55,450,x+55,590),20,fill=(226,232,240),outline=(103,232,249),width=5)
+          d.rounded_rectangle((170,900,910,1090),45,fill=(249,115,22))
+          d.text((540,995),"الان بخر، بعداً پرداخت کن",font=ImageFont.truetype(fp,55),fill=(15,23,42),direction="rtl",anchor="mm")
+          d.rounded_rectangle((55,1170,1025,1810),55,fill=(3,20,32),outline="white",width=3)
+          lines(d,["فقط یک دکمهٔ ساده نیست","این هم یک قرارداد اعتباری است"],1250,big)
+          lines(d,["قانون تازه از ۲۰ نوامبر اجرا شده"],1560,med,fill=(165,243,252))
+          im.save("credit-scene-1-fixed.png")
+          PY
+      - name: Patch video while preserving Aran narration
+        run: |
+          set -euo pipefail
+          src=deliveries/almanyar-20261128-14-credit-rules.mp4
+          test -s "$src"
+          boundary=$(ffmpeg -hide_banner -i "$src" -filter_complex "select='gt(scene,0.22)',showinfo" -f null - 2>&1 | sed -n 's/.*pts_time:\([0-9.]*\).*/\1/p' | head -1)
+          python3 -c "b=float('$boundary'); assert 12 < b < 15, b"
+          ffmpeg -hide_banner -loglevel error -y -loop 1 -framerate 30 -i credit-scene-1-fixed.png -i "$src"             -filter_complex "[0:v]scale=1200:2134,zoompan=z='min(zoom+0.00065,1.07)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1920:fps=30,format=yuv420p[v];[1:a]atrim=0:$boundary,asetpts=PTS-STARTPTS[a]"             -map "[v]" -map "[a]" -t "$boundary" -c:v libx264 -preset medium -crf 19 -c:a aac -b:a 192k -movflags +faststart head.mp4
+          ffmpeg -hide_banner -loglevel error -y -ss "$boundary" -i "$src" -c copy tail.mp4
+          printf "file 'head.mp4'\nfile 'tail.mp4'\n" > list.txt
+          ffmpeg -hide_banner -loglevel error -y -f concat -safe 0 -i list.txt -c copy patched.mp4
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 patched.mp4)" = 1080
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 patched.mp4)" = 1920
+          test "$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 patched.mp4)" = audio
+          duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 patched.mp4)
+          python3 -c "d=float('$duration'); assert 58 < d < 61, d"
+          mv patched.mp4 "$src"
+          ffprobe -v error -show_entries format=duration,size -of json "$src"
+          sha256sum "$src"
+      - name: Commit corrected delivery
+        run: |
+          git config user.name "Almanyar Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add deliveries/almanyar-20261128-14-credit-rules.mp4
+          git commit -m "Fix clipped Persian text in credit rules reel"
+          git push origin HEAD:runs/almanyar-20261128-14-credit-rules
+      - name: Upload corrected artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: almanyar-20261128-14-credit-rules-fixed
+          path: deliveries/almanyar-20261128-14-credit-rules.mp4
+          if-no-files-found: error
+          retention-days: 3
