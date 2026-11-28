@@ -77,12 +77,11 @@ jobs:
           font_big=ImageFont.truetype(font_path, 78)
           font_med=ImageFont.truetype(font_path, 52)
           font_small=ImageFont.truetype(font_path, 34)
-          def rtl(s): return get_display(arabic_reshaper.reshape(s))
+          def rtl(s): return s
           def text_r(draw, lines, y, font, fill=(255,255,255), gap=20, margin=80):
               for line in lines:
-                  shaped=rtl(line)
-                  box=draw.textbbox((0,0), shaped, font=font)
-                  draw.text((W-margin-(box[2]-box[0]), y), shaped, font=font, fill=fill)
+                  box=draw.textbbox((0,0), line, font=font, direction="rtl")
+                  draw.text((W-margin, y), line, font=font, fill=fill, direction="rtl", anchor="ra")
                   y += (box[3]-box[1])+gap
               return y
           def base(c1,c2):
@@ -131,8 +130,7 @@ jobs:
               d.line((x1,y1,x2,y2),fill=(153,246,228),width=18)
           for cx,label in [(250,"واردکننده"),(830,"نماینده"),(540,"خدمات سفارش")]:
               d.ellipse((cx-110,760,cx+110,980),fill=(15,23,42),outline=(153,246,228),width=7)
-              shaped=rtl(label); box=d.textbbox((0,0),shaped,font=font_small)
-              d.text((cx-(box[2]-box[0])/2,840),shaped,font=font_small,fill="white")
+              d.text((cx,880),label,font=font_small,fill="white",direction="rtl",anchor="mm")
           d.rounded_rectangle((55,1090,1025,1810),55,fill=(3,45,38),outline=(255,255,255),width=3)
           text_r(d,["فقط شرکت سازنده نیست"],1170,font_big)
           text_r(d,["در بعضی شرایط، واردکننده یا نماینده","هم می‌تواند طرف مطالبه باشد"],1410,font_med,fill=(204,251,241))
